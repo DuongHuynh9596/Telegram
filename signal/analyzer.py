@@ -1,15 +1,8 @@
 #!/usr/bin/env python3
-"""
-XAUUSD Macro Signal Analyzer
-- Doc US10Y, DXY, VIX, SILVER, XAUUSD tu yfinance
-- Phan tich voi Claude Code CLI
-- Chong trung tin hieu (chi gui khi doi chieu)
-- HOLD: khong gui Telegram
-- Dao chieu: dong vi tri nguoc chieu truoc khi mo moi
-- Quan ly von thong minh: 3 vi tri, dong bot + doi BE+50pts
-- Thuc thi MT5 voi auto-detect filling type
-- Gui Telegram kem screenshot TradingView
-"""
+# XAUUSD Macro Signal Analyzer
+# Doc US10Y, DXY, VIX, SILVER, XAUUSD tu yfinance | Phan tich voi Claude
+# HOLD: khong gui Telegram | Dao chieu: dong vi tri cu truoc khi mo moi
+# Quan ly von: 3 vi tri, partial close + doi BE+50pts
 
 import json, time, schedule, requests, subprocess, base64, os, re
 import yfinance as yf
