@@ -14,7 +14,6 @@
 #property link        ""
 #property version     "1.10"
 #property description "Backtest EA: EMA20/EMA50 + RSI macro correlation rules"
-#property strict
 
 #include <Trade\Trade.mqh>
 

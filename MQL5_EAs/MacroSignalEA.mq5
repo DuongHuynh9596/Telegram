@@ -10,7 +10,6 @@
 #property link        ""
 #property version     "1.10"
 #property description "Live EA: reads Python macro signal from signal.json"
-#property strict
 
 #include <Trade\Trade.mqh>
 
