@@ -486,8 +486,8 @@ void OnTick()
       return;
    }
 
-   //--- 9. Execute
-   ExecuteTrade(sd);
+   //--- 9. Python handles all execution — EA is display/log only
+   // ExecuteTrade(sd);
 }
 
 //+------------------------------------------------------------------+
