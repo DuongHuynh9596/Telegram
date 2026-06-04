@@ -203,14 +203,15 @@ def get_entry_sl_tp(signal_dir):
 # ============================================================
 def get_filling_type(symbol):
     # Auto-detect filling type supported by broker
+    # filling_mode bits: 1=FOK, 2=IOC
     info = mt5.symbol_info(symbol)
     if info is None:
         return mt5.ORDER_FILLING_IOC
 
     filling = info.filling_mode
-    if filling & mt5.SYMBOL_FILLING_FOK:
+    if filling & 1:
         return mt5.ORDER_FILLING_FOK
-    if filling & mt5.SYMBOL_FILLING_IOC:
+    if filling & 2:
         return mt5.ORDER_FILLING_IOC
     return mt5.ORDER_FILLING_RETURN
 
