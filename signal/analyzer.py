@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
 XAUUSD Macro Signal Analyzer
-- Đọc US10Y, DXY, VIX, SILVER, XAUUSD từ yfinance
-- Phân tích với Claude Code CLI
-- Chống trùng tín hiệu (chỉ gửi khi đổi chiều)
-- Thực thi MT5 với auto-detect filling type
-- Gửi Telegram kèm screenshot TradingView
+- Doc US10Y, DXY, VIX, SILVER, XAUUSD tu yfinance
+- Phan tich voi Claude Code CLI
+- Chong trung tin hieu (chi gui khi doi chieu)
+- HOLD: khong gui Telegram
+- Dao chieu: dong vi tri nguoc chieu truoc khi mo moi
+- Quan ly von thong minh: 3 vi tri, dong bot + doi BE+50pts
+- Thuc thi MT5 voi auto-detect filling type
+- Gui Telegram kem screenshot TradingView
 """
 
 import json, time, schedule, requests, subprocess, base64, os, re
@@ -21,6 +24,9 @@ TELEGRAM_TOKEN   = "8945392493:AAF593FIi70bhrGIc52U01F_YcUnC15liWA"
 TELEGRAM_CHAT_ID = "-1003967823435"
 CDP_PORT         = 9222
 LOT_SIZE         = 0.01
+NUM_POSITIONS    = 3        # so vi tri mo moi signal
+PARTIAL_CLOSE_AT = 20       # dong 1 vi tri khi lai >= 20 points
+BE_BUFFER        = 50       # doi SL ve BE + 50 points sau partial close
 MIN_CONFIDENCE   = 60
 MAGIC            = 20240101
 
@@ -32,7 +38,7 @@ SCREENSHOT_FILE  = MT5_COMMON / "screenshot.png"
 LAST_SIGNAL_FILE = MT5_COMMON / "last_signal.json"
 
 # ============================================================
-# CHỐNG TRÙNG TÍN HIỆU
+# CHONG TRUNG TIN HIEU
 # ============================================================
 def load_last_signal():
     if not LAST_SIGNAL_FILE.exists():
@@ -49,14 +55,13 @@ def save_last_signal(signal):
                    "timestamp": datetime.now().isoformat()}, f)
 
 def is_duplicate(new_signal):
-    # Returns True if same direction as last signal (BUY/SELL)
     if new_signal.get("signal") == "HOLD":
         return False
     last = load_last_signal()
     if not last:
         return False
     if last.get("signal") == new_signal.get("signal"):
-        print(f"  ⏭  Tín hiệu trùng ({new_signal['signal']}) — bỏ qua Telegram + MT5")
+        print(f"  Tin hieu trung ({new_signal['signal']}) — bo qua Telegram + MT5")
         return True
     return False
 
@@ -90,7 +95,7 @@ def get_macro_data():
                 }
                 print(f"  {name}: {data[name]['price']} ({data[name]['change_pct']:+.2f}%)")
         except Exception as e:
-            print(f"  Lỗi {name}: {e}")
+            print(f"  Loi {name}: {e}")
     return data
 
 # ============================================================
@@ -102,7 +107,7 @@ def take_screenshot():
         pages = requests.get(f"http://localhost:{CDP_PORT}/json", timeout=5).json()
         chart = next((p for p in pages if "tradingview.com/chart" in p.get("url", "")), None)
         if not chart:
-            print("  Không tìm thấy TradingView chart")
+            print("  Khong tim thay TradingView chart")
             return None
         ws = websocket.create_connection(chart["webSocketDebuggerUrl"], timeout=10)
         ws.send(json.dumps({
@@ -114,10 +119,10 @@ def take_screenshot():
         if "result" in result and "data" in result["result"]:
             with open(SCREENSHOT_FILE, "wb") as f:
                 f.write(base64.b64decode(result["result"]["data"]))
-            print(f"  Screenshot OK")
+            print("  Screenshot OK")
             return str(SCREENSHOT_FILE)
     except Exception as e:
-        print(f"  Lỗi screenshot: {e}")
+        print(f"  Loi screenshot: {e}")
     return None
 
 # ============================================================
@@ -130,19 +135,17 @@ def analyze_with_claude(macro):
     vix    = macro.get("VIX",    {})
     silver = macro.get("SILVER", {})
 
-    # Claude chỉ cần trả signal + confidence + analysis
-    # Entry/SL/TP sẽ được tính từ giá XAUUSD thật trên MT5
-    prompt = f"""Phân tích vĩ mô XAUUSD. Chỉ trả về JSON, không text khác.
+    prompt = f"""Phan tich vi mo XAUUSD. Chi tra ve JSON, khong text khac.
 
-DỮ LIỆU (GC Futures dùng để tham khảo macro):
+DU LIEU (GC Futures dung de tham khao macro):
 - XAUUSD : ${xau.get('price')} ({xau.get('change_pct'):+.2f}%) | H24: ${xau.get('high_24h')} L24: ${xau.get('low_24h')}
 - DXY    : {dxy.get('price')} ({dxy.get('change_pct'):+.2f}%)
 - US10Y  : {us10y.get('price')}% ({us10y.get('change_pct'):+.2f}%)
 - VIX    : {vix.get('price')} ({vix.get('change_pct'):+.2f}%)
 - SILVER : ${silver.get('price')} ({silver.get('change_pct'):+.2f}%)
 
-JSON format (chỉ JSON, không cần tính entry/sl/tp):
-{{"signal":"BUY|SELL|HOLD","confidence":50-95,"analysis":"<tiếng Việt>"}}"""
+JSON format (chi JSON, khong tinh entry/sl/tp):
+{{"signal":"BUY|SELL|HOLD","confidence":50-95,"analysis":"<noi dung phan tich>"}}"""
 
     try:
         result = subprocess.run(
@@ -155,13 +158,12 @@ JSON format (chỉ JSON, không cần tính entry/sl/tp):
             return json.loads(match.group())
         print(f"  Claude output: {result.stdout[:200]}")
     except Exception as e:
-        print(f"  Lỗi Claude: {e}")
+        print(f"  Loi Claude: {e}")
 
-    return {"signal": "HOLD", "confidence": 50, "analysis": "Không phân tích được — giữ nguyên"}
+    return {"signal": "HOLD", "confidence": 50, "analysis": "Khong phan tich duoc — giu nguyen"}
 
 
 def get_mt5_symbol():
-    # Find XAUUSD symbol on MT5
     for sym in ["XAUUSD", "XAUUSDm", "GOLD", "XAUUSD.", "XAUUSDc"]:
         info = mt5.symbol_info(sym)
         if info is not None:
@@ -170,7 +172,6 @@ def get_mt5_symbol():
 
 
 def get_entry_sl_tp(signal_dir):
-    # Get real XAUUSD price from MT5, calculate fixed SL/TP
     if not mt5.initialize():
         return None, None, None
 
@@ -183,7 +184,7 @@ def get_entry_sl_tp(signal_dir):
         mt5.symbol_select(symbol, True)
         time.sleep(0.3)
 
-    tick = mt5.symbol_info_tick(symbol)
+    tick   = mt5.symbol_info_tick(symbol)
     digits = int(mt5.symbol_info(symbol).digits)
     mt5.shutdown()
 
@@ -191,7 +192,7 @@ def get_entry_sl_tp(signal_dir):
         entry = round(tick.ask, digits)
         sl    = round(entry - 15, digits)
         tp    = round(entry + 30, digits)
-    else:  # SELL
+    else:
         entry = round(tick.bid, digits)
         sl    = round(entry + 15, digits)
         tp    = round(entry - 30, digits)
@@ -199,15 +200,12 @@ def get_entry_sl_tp(signal_dir):
     return entry, sl, tp
 
 # ============================================================
-# MT5 EXECUTION
+# MT5 UTILITIES
 # ============================================================
 def get_filling_type(symbol):
-    # Auto-detect filling type supported by broker
-    # filling_mode bits: 1=FOK, 2=IOC
     info = mt5.symbol_info(symbol)
     if info is None:
         return mt5.ORDER_FILLING_IOC
-
     filling = info.filling_mode
     if filling & 1:
         return mt5.ORDER_FILLING_FOK
@@ -215,73 +213,249 @@ def get_filling_type(symbol):
         return mt5.ORDER_FILLING_IOC
     return mt5.ORDER_FILLING_RETURN
 
+
+def close_position(pos):
+    symbol   = pos.symbol
+    ticket   = pos.ticket
+    volume   = pos.volume
+    pos_type = pos.type  # 0=BUY, 1=SELL
+
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        return False, "Khong lay duoc gia"
+
+    if pos_type == mt5.ORDER_TYPE_BUY:
+        close_type  = mt5.ORDER_TYPE_SELL
+        close_price = tick.bid
+    else:
+        close_type  = mt5.ORDER_TYPE_BUY
+        close_price = tick.ask
+
+    request = {
+        "action":       mt5.TRADE_ACTION_DEAL,
+        "symbol":       symbol,
+        "volume":       volume,
+        "type":         close_type,
+        "position":     ticket,
+        "price":        close_price,
+        "deviation":    30,
+        "magic":        MAGIC,
+        "comment":      "MacroClose",
+        "type_time":    mt5.ORDER_TIME_GTC,
+        "type_filling": get_filling_type(symbol),
+    }
+
+    result = mt5.order_send(request)
+    if result is None:
+        return False, "order_send None"
+    if result.retcode == mt5.TRADE_RETCODE_DONE:
+        return True, f"Dong ticket={ticket} OK"
+    return False, f"retcode={result.retcode}: {result.comment}"
+
+
+def close_all_by_magic(symbol):
+    positions = mt5.positions_get(symbol=symbol)
+    if not positions:
+        return
+    for pos in positions:
+        if pos.magic == MAGIC:
+            ok, msg = close_position(pos)
+            print(f"  {msg}")
+
+
+def modify_sl(ticket, new_sl):
+    pos = None
+    for p in mt5.positions_get():
+        if p.ticket == ticket:
+            pos = p
+            break
+    if pos is None:
+        return False
+
+    digits = int(mt5.symbol_info(pos.symbol).digits)
+    request = {
+        "action":   mt5.TRADE_ACTION_SLTP,
+        "symbol":   pos.symbol,
+        "position": ticket,
+        "sl":       round(new_sl, digits),
+        "tp":       pos.tp,
+    }
+    result = mt5.order_send(request)
+    if result is None:
+        return False
+    return result.retcode == mt5.TRADE_RETCODE_DONE
+
+# ============================================================
+# SMART POSITION MANAGER (goi sau khi mo vi tri)
+# ============================================================
+def manage_positions(symbol, direction, entry_price):
+    """
+    Theo doi vi tri: khi lai >= PARTIAL_CLOSE_AT points, dong 1 vi tri
+    va doi SL cua vi tri con lai ve BE + BE_BUFFER points.
+    Chay lien tuc den khi het vi tri cua EA nay.
+    """
+    point  = mt5.symbol_info(symbol).point
+    digits = int(mt5.symbol_info(symbol).digits)
+
+    partial_done = False  # da dong partial chua
+    be_done      = False  # da doi BE chua
+
+    print(f"  [Manager] Bat dau theo doi {symbol} {direction} entry={entry_price}")
+
+    while True:
+        time.sleep(15)
+
+        if not mt5.initialize():
+            continue
+
+        positions = [p for p in (mt5.positions_get(symbol=symbol) or [])
+                     if p.magic == MAGIC]
+        mt5.shutdown()
+
+        if not positions:
+            print("  [Manager] Het vi tri — dung theo doi")
+            break
+
+        # Gia hien tai (dung price cua vi tri dau tien)
+        tick = None
+        if mt5.initialize():
+            tick = mt5.symbol_info_tick(symbol)
+            mt5.shutdown()
+        if tick is None:
+            continue
+
+        cur_price = tick.bid if direction == "BUY" else tick.ask
+        profit_pts = (cur_price - entry_price) if direction == "BUY" \
+                     else (entry_price - cur_price)
+        profit_pts = round(profit_pts / point)
+
+        if not partial_done and profit_pts >= PARTIAL_CLOSE_AT:
+            print(f"  [Manager] Lai {profit_pts} pts >= {PARTIAL_CLOSE_AT} — dong 1 vi tri")
+            if mt5.initialize():
+                # dong vi tri dau tien trong danh sach
+                ok, msg = close_position(positions[0])
+                print(f"  [Manager] {msg}")
+
+                # cap nhat lai danh sach
+                positions = [p for p in (mt5.positions_get(symbol=symbol) or [])
+                             if p.magic == MAGIC]
+
+                # doi SL cua vi tri con lai ve BE + buffer
+                if not be_done:
+                    be_buffer_price = (entry_price + BE_BUFFER * point) if direction == "BUY" \
+                                       else (entry_price - BE_BUFFER * point)
+                    for p in positions:
+                        ok2 = modify_sl(p.ticket, be_buffer_price)
+                        print(f"  [Manager] Doi SL ticket={p.ticket} ve BE+{BE_BUFFER}pts: {'OK' if ok2 else 'FAIL'}")
+                    be_done = True
+
+                mt5.shutdown()
+                partial_done = True
+
+# ============================================================
+# MT5 EXECUTION
+# ============================================================
 def execute_mt5(signal):
     if signal["signal"] == "HOLD":
-        return False, "HOLD — không vào lệnh"
+        return False, "HOLD — khong vao lenh"
 
     if signal["confidence"] < MIN_CONFIDENCE:
-        return False, f"Confidence thấp ({signal['confidence']}%)"
+        return False, f"Confidence thap ({signal['confidence']}%)"
 
     if not mt5.initialize():
-        return False, f"Không kết nối MT5: {mt5.last_error()}"
+        return False, f"Khong ket noi MT5: {mt5.last_error()}"
 
     symbol = get_mt5_symbol()
     if not symbol:
         mt5.shutdown()
-        return False, "Không tìm thấy symbol XAUUSD trên MT5"
+        return False, "Khong tim thay symbol XAUUSD tren MT5"
 
     sym_info = mt5.symbol_info(symbol)
     if not sym_info.visible:
         mt5.symbol_select(symbol, True)
         time.sleep(0.5)
 
-    # Kiểm tra đã có lệnh mở chưa
-    open_pos = mt5.positions_get(symbol=symbol)
-    if open_pos:
-        for pos in open_pos:
+    # Dong vi tri nguoc chieu (dao chieu)
+    existing = mt5.positions_get(symbol=symbol)
+    if existing:
+        for pos in existing:
             if pos.magic == MAGIC:
-                mt5.shutdown()
-                return False, f"Đã có lệnh mở ({symbol}) — bỏ qua"
+                pos_dir = "BUY" if pos.type == mt5.ORDER_TYPE_BUY else "SELL"
+                if pos_dir != signal["signal"]:
+                    print(f"  Dao chieu: dong {pos_dir} ticket={pos.ticket}")
+                    ok, msg = close_position(pos)
+                    print(f"  {msg}")
+                else:
+                    mt5.shutdown()
+                    return False, f"Da co lenh {pos_dir} — bo qua"
+
+    # Lap lai 1 giay de dam bao dong xong
+    time.sleep(1)
 
     tick      = mt5.symbol_info_tick(symbol)
     digits    = int(sym_info.digits)
     is_buy    = signal["signal"] == "BUY"
     price     = tick.ask if is_buy else tick.bid
     order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
+    filling    = get_filling_type(symbol)
 
     sl = round(float(signal["sl"]), digits)
     tp = round(float(signal["tp"]), digits)
 
-    request = {
-        "action":       mt5.TRADE_ACTION_DEAL,
-        "symbol":       symbol,
-        "volume":       LOT_SIZE,
-        "type":         order_type,
-        "price":        price,
-        "sl":           sl,
-        "tp":           tp,
-        "deviation":    30,
-        "magic":        MAGIC,
-        "comment":      "MacroSignal",
-        "type_time":    mt5.ORDER_TIME_GTC,
-        "type_filling": get_filling_type(symbol),
-    }
+    tickets = []
+    for i in range(NUM_POSITIONS):
+        request = {
+            "action":       mt5.TRADE_ACTION_DEAL,
+            "symbol":       symbol,
+            "volume":       LOT_SIZE,
+            "type":         order_type,
+            "price":        price,
+            "sl":           sl,
+            "tp":           tp,
+            "deviation":    30,
+            "magic":        MAGIC,
+            "comment":      f"MacroSignal#{i+1}",
+            "type_time":    mt5.ORDER_TIME_GTC,
+            "type_filling": filling,
+        }
+        result = mt5.order_send(request)
+        if result is None:
+            print(f"  Vi tri {i+1}: order_send None")
+        elif result.retcode == mt5.TRADE_RETCODE_DONE:
+            tickets.append(result.order)
+            print(f"  Vi tri {i+1}: OK ticket={result.order}")
+        else:
+            print(f"  Vi tri {i+1}: FAIL retcode={result.retcode} {result.comment}")
 
-    result = mt5.order_send(request)
     mt5.shutdown()
 
-    if result is None:
-        return False, "MT5 order_send trả về None"
-    if result.retcode == mt5.TRADE_RETCODE_DONE:
-        return True, f"✅ {signal['signal']} {symbol} @ {price} | SL:{sl} TP:{tp}"
-    return False, f"❌ retcode={result.retcode}: {result.comment}"
+    if not tickets:
+        return False, "Khong mo duoc vi tri nao"
+
+    entry_price = price
+    # Chay manager trong thread rieng
+    import threading
+    t = threading.Thread(
+        target=manage_positions,
+        args=(symbol, signal["signal"], entry_price),
+        daemon=True
+    )
+    t.start()
+
+    msg = f"{signal['signal']} x{len(tickets)}/{NUM_POSITIONS} @ {price} | SL:{sl} TP:{tp}"
+    return True, msg
 
 # ============================================================
 # TELEGRAM
 # ============================================================
 def send_telegram(signal, macro, screenshot=None, mt5_msg=""):
-    icon = {"BUY": "🟢", "SELL": "🔴", "HOLD": "⚪"}.get(signal["signal"], "⚪")
-    xau = macro.get("XAUUSD", {})
+    # HOLD: khong gui
+    if signal.get("signal") == "HOLD":
+        print("  HOLD — bo qua Telegram")
+        return
+
+    icon = {"BUY": "🟢", "SELL": "🔴"}.get(signal["signal"], "⚪")
+    xau  = macro.get("XAUUSD", {})
 
     msg = (
         f"{icon} *XAUUSD MACRO SIGNAL*\n"
@@ -312,83 +486,92 @@ def send_telegram(signal, macro, screenshot=None, mt5_msg=""):
                                 "parse_mode": "Markdown"}, timeout=30)
         print("  Telegram OK")
     except Exception as e:
-        print(f"  Lỗi Telegram: {e}")
+        print(f"  Loi Telegram: {e}")
 
 # ============================================================
 # MAIN RUN
 # ============================================================
 def run():
     print(f"\n{'='*50}")
-    print(f"⏰ {datetime.now().strftime('%H:%M:%S')} — Bắt đầu phân tích...")
+    print(f"⏰ {datetime.now().strftime('%H:%M:%S')} — Bat dau phan tich...")
 
     # 1. Macro data
-    print("📊 Đọc macro data...")
+    print("📊 Doc macro data...")
     macro = get_macro_data()
     if not macro:
-        print("❌ Không đọc được data — bỏ qua cycle này")
+        print("Khong doc duoc data — bo qua cycle nay")
         return
 
-    # 2. Claude analysis (chỉ lấy signal + confidence + analysis)
-    print("🤖 Phân tích Claude...")
+    # 2. Claude analysis
+    print("Phan tich Claude...")
     signal = analyze_with_claude(macro)
-    print(f"  → {signal['signal']} (confidence: {signal['confidence']}%)")
+    print(f"  -> {signal['signal']} (confidence: {signal['confidence']}%)")
 
-    # 3. Tính Entry/SL/TP từ giá XAUUSD thật trên MT5 (không dùng GC=F)
-    if signal["signal"] in ("BUY", "SELL"):
-        print("💱 Lấy giá XAUUSD từ MT5...")
-        entry, sl, tp = get_entry_sl_tp(signal["signal"])
-        if entry:
-            signal["entry"] = entry
-            signal["sl"]    = sl
-            signal["tp"]    = tp
-            print(f"  Entry: {entry} | SL: {sl} | TP: {tp}")
-        else:
-            print("  ⚠ Không lấy được giá MT5, dùng fallback GC=F")
-            ref = macro.get("XAUUSD", {}).get("price", 0)
-            signal["entry"] = ref
-            signal["sl"]    = round(ref - 15, 2) if signal["signal"] == "BUY" else round(ref + 15, 2)
-            signal["tp"]    = round(ref + 30, 2) if signal["signal"] == "BUY" else round(ref - 30, 2)
-    else:
+    # 3. HOLD: ghi file roi thoat
+    if signal["signal"] == "HOLD":
         signal["entry"] = macro.get("XAUUSD", {}).get("price", 0)
         signal["sl"]    = 0
         signal["tp"]    = 0
+        with open(SIGNAL_FILE, "w", encoding="utf-8") as f:
+            json.dump({**signal, "timestamp": datetime.now().isoformat(),
+                       "macro": macro}, f, indent=2, ensure_ascii=False)
+        print("  HOLD — bo qua Telegram va MT5")
+        return
 
-    # 4. Luôn ghi signal.json để EA MT5 đọc
+    # 4. Tinh Entry/SL/TP tu gia XAUUSD that tren MT5
+    print("Lay gia XAUUSD tu MT5...")
+    entry, sl, tp = get_entry_sl_tp(signal["signal"])
+    if entry:
+        signal["entry"] = entry
+        signal["sl"]    = sl
+        signal["tp"]    = tp
+        print(f"  Entry: {entry} | SL: {sl} | TP: {tp}")
+    else:
+        print("  Khong lay duoc gia MT5, dung fallback GC=F")
+        ref = macro.get("XAUUSD", {}).get("price", 0)
+        signal["entry"] = ref
+        signal["sl"]    = round(ref - 15, 2) if signal["signal"] == "BUY" else round(ref + 15, 2)
+        signal["tp"]    = round(ref + 30, 2) if signal["signal"] == "BUY" else round(ref - 30, 2)
+
+    # 5. Ghi signal.json
     with open(SIGNAL_FILE, "w", encoding="utf-8") as f:
         json.dump({**signal, "timestamp": datetime.now().isoformat(),
                    "macro": macro}, f, indent=2, ensure_ascii=False)
-    print(f"  signal.json → {SIGNAL_FILE}")
+    print(f"  signal.json -> {SIGNAL_FILE}")
 
-    # 5. Kiểm tra trùng tín hiệu
+    # 6. Kiem tra trung tin hieu
     if is_duplicate(signal):
-        print("✅ Xong (bỏ qua do tín hiệu trùng)")
+        print("Xong (bo qua do tin hieu trung)")
         return
 
-    # 6. Lưu tín hiệu mới
+    # 7. Luu tin hieu moi
     save_last_signal(signal)
 
-    # 7. Screenshot
-    print("📸 Screenshot TradingView...")
+    # 8. Screenshot
+    print("Screenshot TradingView...")
     screenshot = take_screenshot()
 
-    # 8. Thực thi MT5
-    print("🚀 Thực thi MT5...")
+    # 9. Thuc thi MT5
+    print("Thuc thi MT5...")
     ok, mt5_msg = execute_mt5(signal)
     print(f"  {mt5_msg}")
 
-    # 9. Telegram
-    print("📱 Gửi Telegram...")
+    # 10. Telegram (chi BUY/SELL)
+    print("Gui Telegram...")
     send_telegram(signal, macro, screenshot, mt5_msg)
 
-    print("✅ Xong!")
+    print("Xong!")
 
 
 if __name__ == "__main__":
-    print("🚀 XAUUSD Macro Analyzer — Khởi động")
-    print(f"📁 Signal file : {SIGNAL_FILE}")
-    print(f"⏱  Chu kỳ     : mỗi 15 phút\n")
+    print("XAUUSD Macro Analyzer — Khoi dong")
+    print(f"Signal file : {SIGNAL_FILE}")
+    print(f"Chu ky      : moi 15 phut")
+    print(f"Vi tri/signal: {NUM_POSITIONS} x {LOT_SIZE} lot")
+    print(f"Partial close: >= {PARTIAL_CLOSE_AT} pts")
+    print(f"BE buffer   : +{BE_BUFFER} pts\n")
 
-    run()  # Chạy ngay lần đầu
+    run()
 
     schedule.every(15).minutes.do(run)
     while True:
