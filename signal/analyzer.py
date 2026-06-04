@@ -137,6 +137,10 @@ DU LIEU (GC Futures dung de tham khao macro):
 - VIX    : {vix.get('price')} ({vix.get('change_pct'):+.2f}%)
 - SILVER : ${silver.get('price')} ({silver.get('change_pct'):+.2f}%)
 
+QUY TAC:
+- confidence >= 60 va xu huong ro rang -> signal = BUY hoac SELL
+- confidence < 60 hoac thi truong khong ro rang -> signal = HOLD
+
 JSON format (chi JSON, khong tinh entry/sl/tp):
 {{"signal":"BUY|SELL|HOLD","confidence":50-95,"analysis":"<noi dung phan tich>"}}"""
 
