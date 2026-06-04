@@ -49,7 +49,7 @@ def save_last_signal(signal):
                    "timestamp": datetime.now().isoformat()}, f)
 
 def is_duplicate(new_signal):
-    """Trả về True nếu tín hiệu giống lần trước (cùng chiều BUY/SELL)"""
+    # Returns True if same direction as last signal (BUY/SELL)
     if new_signal.get("signal") == "HOLD":
         return False
     last = load_last_signal()
@@ -161,7 +161,7 @@ JSON format (chỉ JSON, không cần tính entry/sl/tp):
 
 
 def get_mt5_symbol():
-    """Tìm symbol XAUUSD trên MT5"""
+    # Find XAUUSD symbol on MT5
     for sym in ["XAUUSD", "XAUUSDm", "GOLD", "XAUUSD.", "XAUUSDc"]:
         info = mt5.symbol_info(sym)
         if info is not None:
@@ -170,7 +170,7 @@ def get_mt5_symbol():
 
 
 def get_entry_sl_tp(signal_dir):
-    """Lấy giá thật từ XAUUSD OANDA trên MT5, tính SL/TP cố định"""
+    # Get real XAUUSD price from MT5, calculate fixed SL/TP
     if not mt5.initialize():
         return None, None, None
 
@@ -202,7 +202,7 @@ def get_entry_sl_tp(signal_dir):
 # MT5 EXECUTION
 # ============================================================
 def get_filling_type(symbol):
-    """Auto-detect filling type được broker hỗ trợ"""
+    # Auto-detect filling type supported by broker
     info = mt5.symbol_info(symbol)
     if info is None:
         return mt5.ORDER_FILLING_IOC
