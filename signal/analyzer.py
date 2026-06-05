@@ -181,12 +181,10 @@ JSON format (chi JSON, khong tinh entry/sl/tp):
 {{"signal":"BUY|SELL|HOLD","confidence":50-95,"analysis":"<phan tich bang tieng Viet co dau>"}}"""
 
     try:
-        # Tim claude.cmd trong npm global hoac PATH
-        import shutil
-        claude_cmd = shutil.which("claude") or \
-                     os.path.expandvars(r"%APPDATA%\npm\claude.cmd")
+        # Goi qua cmd /c de chay .cmd file tren Windows
+        claude_cmd = os.path.join(os.environ.get("APPDATA", ""), "npm", "claude.cmd")
         result = subprocess.run(
-            [claude_cmd, "--print", "--dangerously-skip-permissions", prompt],
+            ["cmd", "/c", claude_cmd, "--print", "--dangerously-skip-permissions", prompt],
             capture_output=True, text=True, timeout=60,
             encoding="utf-8", errors="ignore"
         )
