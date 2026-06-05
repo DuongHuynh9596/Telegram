@@ -173,19 +173,27 @@ DU LIEU (GC Futures dung de tham khao macro):
 - VIX    : {vix.get('price')} ({vix.get('change_pct'):+.2f}%)
 - SILVER : ${silver.get('price')} ({silver.get('change_pct'):+.2f}%)
 
-QUY TAC:
-- confidence >= 60 va xu huong ro rang -> signal = BUY hoac SELL
-- confidence < 60 hoac thi truong khong ro rang -> signal = HOLD
+PHAN TICH:
+1. DXY tang + US10Y tang -> suc ep giam gia vang (SELL)
+2. DXY giam + US10Y giam -> ho tro tang gia vang (BUY)
+3. VIX tang manh (>20) -> rui ro tang, vang co the tang (BUY)
+4. Silver dong thuan voi Gold -> xac nhan tin hieu
+5. Neu macro khong ro rang hoac tin hieu mau thuan -> HOLD
 
-JSON format (chi JSON, khong tinh entry/sl/tp):
-{{"signal":"BUY|SELL|HOLD","confidence":50-95,"analysis":"<phan tich bang tieng Viet co dau>"}}"""
+QUY TAC OUTPUT:
+- Xu huong ro rang (it nhat 2-3 chi bao dong thuan): signal=BUY hoac SELL, confidence 65-90
+- Xu huong yeu hoac mau thuan: signal=HOLD, confidence 40-59
+- KHONG dung confidence=50 cho BUY/SELL — chi dung 50 khi that su HOLD
+
+JSON format (chi JSON, khong them text khac):
+{{"signal":"BUY|SELL|HOLD","confidence":40-90,"analysis":"<phan tich bang tieng Viet co dau>"}}"""
 
     try:
         # Goi qua cmd /c de chay .cmd file tren Windows
         claude_cmd = os.path.join(os.environ.get("APPDATA", ""), "npm", "claude.cmd")
         result = subprocess.run(
             ["cmd", "/c", claude_cmd, "--print", "--dangerously-skip-permissions", prompt],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=120,
             encoding="utf-8", errors="ignore"
         )
         match = re.search(r'\{[^{}]*\}', result.stdout, re.DOTALL)
