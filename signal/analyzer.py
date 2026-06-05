@@ -76,10 +76,23 @@ def is_duplicate(new_signal):
     last = load_last_signal()
     if not last:
         return False
-    if last.get("signal") == new_signal.get("signal"):
-        print(f"  Tin hieu trung ({new_signal['signal']}) — bo qua Telegram + MT5")
-        return True
-    return False
+    if last.get("signal") != new_signal.get("signal"):
+        return False
+    # Cung chieu — kiem tra MT5 co lenh mo khong
+    # Neu khong co lenh mo thi cho phep vao lai (SL/TP da hit hoac Python bi tat truoc do)
+    if mt5_init():
+        symbol = get_mt5_symbol()
+        has_open = False
+        if symbol:
+            positions = mt5.positions_get(symbol=symbol)
+            has_open = any(p.magic == MAGIC for p in (positions or []))
+        mt5.shutdown()
+        if not has_open:
+            print(f"  Khong co lenh mo — cho phep vao lai cung chieu ({new_signal['signal']})")
+            clear_last_signal()
+            return False
+    print(f"  Tin hieu trung ({new_signal['signal']}) — bo qua Telegram + MT5")
+    return True
 
 # ============================================================
 # MACRO DATA
