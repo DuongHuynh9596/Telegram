@@ -18,8 +18,8 @@ TELEGRAM_CHAT_ID = "-1003967823435"
 CDP_PORT         = 9222
 LOT_SIZE         = 0.01
 NUM_POSITIONS    = 3        # so vi tri mo moi signal
-PARTIAL_CLOSE_AT = 20       # dong 1 vi tri khi lai >= 20 points
-BE_BUFFER        = 50       # doi SL ve BE + 50 points sau partial close
+PARTIAL_CLOSE_USD = 15      # dong 1 vi tri khi lai >= $15/oz (= cach SL)
+BE_BUFFER_USD     = 5       # doi SL ve entry +/- $5 sau partial close
 MIN_CONFIDENCE   = 60
 MAGIC            = 20240101
 
@@ -331,7 +331,6 @@ def manage_positions(symbol, direction, entry_price):
         mt5.shutdown()
         print("  [Manager] Khong lay duoc symbol info — huy")
         return
-    point  = sym.point
     digits = int(sym.digits)
     mt5.shutdown()
 
@@ -355,7 +354,7 @@ def manage_positions(symbol, direction, entry_price):
             clear_last_signal()
             break
 
-        # Gia hien tai (dung price cua vi tri dau tien)
+        # Lay gia hien tai
         tick = None
         if mt5_init():
             tick = mt5.symbol_info_tick(symbol)
@@ -363,29 +362,28 @@ def manage_positions(symbol, direction, entry_price):
         if tick is None:
             continue
 
-        cur_price = tick.bid if direction == "BUY" else tick.ask
-        profit_pts = (cur_price - entry_price) if direction == "BUY" \
+        # Tinh lai bang USD (nhat quan voi cach tinh SL/TP)
+        cur_price  = tick.bid if direction == "BUY" else tick.ask
+        profit_usd = (cur_price - entry_price) if direction == "BUY" \
                      else (entry_price - cur_price)
-        profit_pts = round(profit_pts / point)
 
-        if not partial_done and profit_pts >= PARTIAL_CLOSE_AT:
-            print(f"  [Manager] Lai {profit_pts} pts >= {PARTIAL_CLOSE_AT} — dong 1 vi tri")
+        print(f"  [Manager] {direction} profit=${profit_usd:.2f} | positions={len(positions)}")
+
+        if not partial_done and profit_usd >= PARTIAL_CLOSE_USD:
+            print(f"  [Manager] Lai ${profit_usd:.2f} >= ${PARTIAL_CLOSE_USD} — dong 1 vi tri")
             if mt5_init():
-                # dong vi tri dau tien trong danh sach
                 ok, msg = close_position(positions[0])
                 print(f"  [Manager] {msg}")
 
-                # cap nhat lai danh sach
                 positions = [p for p in (mt5.positions_get(symbol=symbol) or [])
                              if p.magic == MAGIC]
 
-                # doi SL cua vi tri con lai ve BE + buffer
                 if not be_done:
-                    be_buffer_price = (entry_price + BE_BUFFER * point) if direction == "BUY" \
-                                       else (entry_price - BE_BUFFER * point)
+                    be_price = (entry_price + BE_BUFFER_USD) if direction == "BUY" \
+                               else (entry_price - BE_BUFFER_USD)
                     for p in positions:
-                        ok2 = modify_sl(p.ticket, be_buffer_price)
-                        print(f"  [Manager] Doi SL ticket={p.ticket} ve BE+{BE_BUFFER}pts: {'OK' if ok2 else 'FAIL'}")
+                        ok2 = modify_sl(p.ticket, be_price)
+                        print(f"  [Manager] Doi SL ticket={p.ticket} ve BE+${BE_BUFFER_USD}: {'OK' if ok2 else 'FAIL'}")
                     be_done = True
 
                 mt5.shutdown()
@@ -607,8 +605,8 @@ if __name__ == "__main__":
     print(f"Signal file : {SIGNAL_FILE}")
     print(f"Chu ky      : moi 15 phut")
     print(f"Vi tri/signal: {NUM_POSITIONS} x {LOT_SIZE} lot")
-    print(f"Partial close: >= {PARTIAL_CLOSE_AT} pts")
-    print(f"BE buffer   : +{BE_BUFFER} pts\n")
+    print(f"Partial close: lai >= ${PARTIAL_CLOSE_USD}")
+    print(f"BE buffer   : entry +/- ${BE_BUFFER_USD}\n")
 
     run()
 
