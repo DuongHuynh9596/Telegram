@@ -23,12 +23,25 @@ BE_BUFFER        = 50       # doi SL ve BE + 50 points sau partial close
 MIN_CONFIDENCE   = 60
 MAGIC            = 20240101
 
+# MT5 account — dien vao de Python ket noi dung terminal (tranh bi vao MT5 B)
+MT5_LOGIN    = 0       # so tai khoan MT5, vi du: 12345678 (0 = tu dong)
+MT5_PASSWORD = ""      # mat khau MT5
+MT5_SERVER   = ""      # ten server, vi du: "OANDA-v20 Live-1"
+
 MT5_COMMON = Path(os.environ["APPDATA"]) / "MetaQuotes" / "Terminal" / "Common" / "Files"
 MT5_COMMON.mkdir(parents=True, exist_ok=True)
 
 SIGNAL_FILE      = MT5_COMMON / "signal.json"
 SCREENSHOT_FILE  = MT5_COMMON / "screenshot.png"
 LAST_SIGNAL_FILE = MT5_COMMON / "last_signal.json"
+
+# ============================================================
+# MT5 INIT HELPER — ket noi dung account, tranh nham MT5 B
+# ============================================================
+def mt5_init():
+    if MT5_LOGIN:
+        return mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
+    return mt5.initialize()
 
 # ============================================================
 # CHONG TRUNG TIN HIEU
@@ -128,7 +141,7 @@ def analyze_with_claude(macro):
     vix    = macro.get("VIX",    {})
     silver = macro.get("SILVER", {})
 
-    prompt = f"""Phan tich vi mo XAUUSD. Chi tra ve JSON, khong text khac.
+    prompt = f"""Phan tich vi mo XAUUSD. Chi tra ve JSON, khong text khac. Viet analysis bang tieng Viet co dau.
 
 DU LIEU (GC Futures dung de tham khao macro):
 - XAUUSD : ${xau.get('price')} ({xau.get('change_pct'):+.2f}%) | H24: ${xau.get('high_24h')} L24: ${xau.get('low_24h')}
@@ -142,7 +155,7 @@ QUY TAC:
 - confidence < 60 hoac thi truong khong ro rang -> signal = HOLD
 
 JSON format (chi JSON, khong tinh entry/sl/tp):
-{{"signal":"BUY|SELL|HOLD","confidence":50-95,"analysis":"<noi dung phan tich>"}}"""
+{{"signal":"BUY|SELL|HOLD","confidence":50-95,"analysis":"<phan tich bang tieng Viet co dau>"}}"""
 
     try:
         result = subprocess.run(
@@ -169,7 +182,7 @@ def get_mt5_symbol():
 
 
 def get_entry_sl_tp(signal_dir):
-    if not mt5.initialize():
+    if not mt5_init():
         return None, None, None
 
     symbol = get_mt5_symbol()
@@ -286,23 +299,28 @@ def modify_sl(ticket, new_sl):
 # SMART POSITION MANAGER (goi sau khi mo vi tri)
 # ============================================================
 def manage_positions(symbol, direction, entry_price):
-    """
-    Theo doi vi tri: khi lai >= PARTIAL_CLOSE_AT points, dong 1 vi tri
-    va doi SL cua vi tri con lai ve BE + BE_BUFFER points.
-    Chay lien tuc den khi het vi tri cua EA nay.
-    """
-    point  = mt5.symbol_info(symbol).point
-    digits = int(mt5.symbol_info(symbol).digits)
+    # Lay thong tin symbol truoc khi vao vong lap
+    if not mt5_init():
+        print("  [Manager] MT5 init that bai — huy theo doi")
+        return
+    sym = mt5.symbol_info(symbol)
+    if sym is None:
+        mt5.shutdown()
+        print("  [Manager] Khong lay duoc symbol info — huy")
+        return
+    point  = sym.point
+    digits = int(sym.digits)
+    mt5.shutdown()
 
-    partial_done = False  # da dong partial chua
-    be_done      = False  # da doi BE chua
+    partial_done = False
+    be_done      = False
 
     print(f"  [Manager] Bat dau theo doi {symbol} {direction} entry={entry_price}")
 
     while True:
         time.sleep(15)
 
-        if not mt5.initialize():
+        if not mt5_init():
             continue
 
         positions = [p for p in (mt5.positions_get(symbol=symbol) or [])
@@ -315,7 +333,7 @@ def manage_positions(symbol, direction, entry_price):
 
         # Gia hien tai (dung price cua vi tri dau tien)
         tick = None
-        if mt5.initialize():
+        if mt5_init():
             tick = mt5.symbol_info_tick(symbol)
             mt5.shutdown()
         if tick is None:
@@ -328,7 +346,7 @@ def manage_positions(symbol, direction, entry_price):
 
         if not partial_done and profit_pts >= PARTIAL_CLOSE_AT:
             print(f"  [Manager] Lai {profit_pts} pts >= {PARTIAL_CLOSE_AT} — dong 1 vi tri")
-            if mt5.initialize():
+            if mt5_init():
                 # dong vi tri dau tien trong danh sach
                 ok, msg = close_position(positions[0])
                 print(f"  [Manager] {msg}")
@@ -359,7 +377,7 @@ def execute_mt5(signal):
     if signal["confidence"] < MIN_CONFIDENCE:
         return False, f"Confidence thap ({signal['confidence']}%)"
 
-    if not mt5.initialize():
+    if not mt5_init():
         return False, f"Khong ket noi MT5: {mt5.last_error()}"
 
     symbol = get_mt5_symbol()
