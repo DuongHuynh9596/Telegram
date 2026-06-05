@@ -60,6 +60,14 @@ def save_last_signal(signal):
         json.dump({"signal": signal["signal"], "entry": signal["entry"],
                    "timestamp": datetime.now().isoformat()}, f)
 
+def clear_last_signal():
+    # Goi khi het vi tri (SL/TP hit) — cho phep vao lai lenh cung chieu
+    try:
+        if LAST_SIGNAL_FILE.exists():
+            LAST_SIGNAL_FILE.unlink()
+    except:
+        pass
+
 def is_duplicate(new_signal):
     if new_signal.get("signal") == "HOLD":
         return False
@@ -328,7 +336,8 @@ def manage_positions(symbol, direction, entry_price):
         mt5.shutdown()
 
         if not positions:
-            print("  [Manager] Het vi tri — dung theo doi")
+            print("  [Manager] Het vi tri (SL/TP hit) — reset de cho phep vao lai lenh moi")
+            clear_last_signal()
             break
 
         # Gia hien tai (dung price cua vi tri dau tien)
