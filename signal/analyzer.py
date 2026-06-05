@@ -24,6 +24,7 @@ MIN_CONFIDENCE   = 60
 MAGIC            = 20240101
 
 # MT5 account — dien vao de Python ket noi dung terminal (tranh bi vao MT5 B)
+MT5_PATH     = r"C:\Program Files\MetaTrader 5\terminal64.exe"  # duong dan MT5
 MT5_LOGIN    = 0       # so tai khoan MT5, vi du: 12345678 (0 = tu dong)
 MT5_PASSWORD = ""      # mat khau MT5
 MT5_SERVER   = ""      # ten server, vi du: "OANDA-v20 Live-1"
@@ -40,8 +41,9 @@ LAST_SIGNAL_FILE = MT5_COMMON / "last_signal.json"
 # ============================================================
 def mt5_init():
     if MT5_LOGIN:
-        return mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
-    return mt5.initialize()
+        return mt5.initialize(path=MT5_PATH, login=MT5_LOGIN,
+                              password=MT5_PASSWORD, server=MT5_SERVER)
+    return mt5.initialize(path=MT5_PATH)
 
 # ============================================================
 # CHONG TRUNG TIN HIEU
