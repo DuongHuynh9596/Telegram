@@ -1,0 +1,15 @@
+# Signal files (chứa thông tin lệnh realtime, không cần backup)
+*.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Log CSV (optional — bỏ comment nếu muốn backup log)
+# signal_log.csv
+
+# Temp files
+*.tmp
+b64.txt
+xau_patch.py
