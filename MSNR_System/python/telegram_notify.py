@@ -8,7 +8,6 @@ BOT_TOKEN  = "8831434339:AAG_vFqfRsTtAwpJV9woIMnRtGQExND1X9c"
 CHANNEL_ID = "-1003996984890"
 BASE_URL   = "https://api.telegram.org/bot" + BOT_TOKEN
 
-# Pre-defined unicode (tranh backslash trong f-string Python 3.11)
 BELL   = "\U0001f514"
 CHART  = "\U0001f4ca"
 BOX    = "\U0001f4e6"
@@ -26,6 +25,8 @@ CLIP   = "\U0001f4cb"
 UP     = "↗"
 DOWN   = "↘"
 DASH   = "—"
+PENCIL = "✏️"
+WARN   = "⚠️"
 
 
 def _post(endpoint, **kwargs):
@@ -41,9 +42,9 @@ def _post(endpoint, **kwargs):
 
 def send_message(text):
     return _post("sendMessage", json={
-        "chat_id": CHANNEL_ID,
-        "text": text,
-        "parse_mode": "HTML",
+        "chat_id"    : CHANNEL_ID,
+        "text"       : text,
+        "parse_mode" : "HTML",
     })
 
 
@@ -59,38 +60,42 @@ def send_photo(photo_path, caption=""):
         return False
 
 
-def _vi_analysis(signal):
-    """Phan tich ly do bang tieng Viet"""
-    action = signal["action"]
-    p3     = signal.get("p3_trendline", False)
-    fresh  = signal.get("fresh_level", False)
-    conf   = signal.get("confluence", 0)
-    entry  = signal["entry"]
-    sl     = signal["sl"]
-    rr     = signal.get("rr", 0)
+def _format_analysis(signal):
+    """
+    Su dung signal['analysis_items'] neu co (chi tiet),
+    fallback ve phan tich don gian.
+    """
+    tf = signal.get('analysis_tf', 'H1')
+    items = signal.get('analysis_items', [])
 
-    lines = []
-    if action == "BUY":
+    if items:
+        lines = [f"{PENCIL} <b>Phan tich MSNR ({tf}):</b>"]
+        for it in items:
+            lines.append(f"{it['icon']} {it['text']}")
+            lines.append(f"   <i>{it['detail']}</i>")
+        return "\n".join(lines)
+
+    # Fallback don gian
+    action = signal.get('action', '')
+    p3     = signal.get('p3_trendline', False)
+    fresh  = signal.get('fresh_level', False)
+    entry  = signal.get('entry', 0)
+    sl     = signal.get('sl', 0)
+    tp     = signal.get('tp', 0)
+    rr     = signal.get('rr', 0)
+    lines  = [f"{PENCIL} <b>Phan tich MSNR ({tf}):</b>"]
+    if action == 'BUY':
         if fresh:
-            lines.append("- Gia dang test <b>V-Level (Ho Tro) fresh</b> chua bi wick cham")
+            lines.append(f"🟢 V-Level (Ho Tro) FRESH ({tf}) — chua bi wick cham")
         if p3:
-            lines.append("- <b>P3 Trendline UP</b>: Wick cham trendline tang, than nen trong zone")
-        if not fresh and not p3:
-            lines.append("- Gia tiep can vung ho tro MSNR")
-        lines.append(f"- SL dat ben duoi level <b>${abs(entry - sl):.1f}</b> gia vang")
-        lines.append(f"- TP tai khang cu fresh tiep theo, RR <b>{rr:.1f}:1</b>")
+            lines.append(f"📐 P3 Trendline UP ({tf}) — wick cham, than nen trong zone")
+        lines.append(f"🎯 TP tai A-Level @ <b>{tp:.2f}</b> ({tf}), RR {rr:.1f}:1")
     else:
         if fresh:
-            lines.append("- Gia dang test <b>A-Level (Khang Cu) fresh</b> chua bi wick cham")
+            lines.append(f"🔴 A-Level (Khang Cu) FRESH ({tf}) — chua bi wick cham")
         if p3:
-            lines.append("- <b>P3 Trendline DOWN</b>: Wick cham trendline giam, than nen trong zone")
-        if not fresh and not p3:
-            lines.append("- Gia tiep can vung khang cu MSNR")
-        lines.append(f"- SL dat ben tren level <b>${abs(sl - entry):.1f}</b> gia vang")
-        lines.append(f"- TP tai ho tro fresh tiep theo, RR <b>{rr:.1f}:1</b>")
-
-    if conf >= 2:
-        lines.append(f"- <b>Tin hieu manh</b>: {conf} diem hoi tu (Trendline + Level)")
+            lines.append(f"📐 P3 Trendline DOWN ({tf}) — wick cham, than nen trong zone")
+        lines.append(f"🎯 TP tai V-Level @ <b>{tp:.2f}</b> ({tf}), RR {rr:.1f}:1")
     return "\n".join(lines)
 
 
@@ -106,18 +111,26 @@ def send_signal_alert(signal):
     risk   = round(sl_usd * lot * 100, 0)
     arr    = UP if action == "BUY" else DOWN
     lbl    = "LONG" if action == "BUY" else "SHORT"
-    analysis = _vi_analysis(signal)
+    conf   = signal.get("confluence", 0)
+    tf     = signal.get("analysis_tf", "H1")
+    analysis = _format_analysis(signal)
     now    = datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")
+
+    # Confluence rating
+    if conf >= 2:
+        conf_txt = f"<b>Manh</b> ({conf}/2) ✅"
+    else:
+        conf_txt = f"Trung binh ({conf}/2) {WARN}"
 
     msg = (
         f"{BELL} <b>MSNR SIGNAL {DASH} XAUUSD {lbl}</b>\n\n"
         f"{arr} <b>{action}</b> @ <code>{entry:.2f}</code>\n"
-        f"{STOP} SL: <code>{sl:.2f}</code>  (-${sl_usd:.0f})\n"
+        f"{STOP} SL: <code>{sl:.2f}</code>  (-${sl_usd:.0f} | Khung: {tf})\n"
         f"{TARGET} TP: <code>{tp:.2f}</code>  (+${tp_usd} | RR <b>{rr:.1f}:1</b>)\n"
-        f"{BOX} Lot: <code>{lot}</code>  | Risk: ~<b>${risk:.0f}</b>\n\n"
-        f"{CHART} <b>Phan tich MSNR:</b>\n"
+        f"{BOX} Lot: <code>{lot}</code>  | Risk: ~<b>${risk:.0f}</b>\n"
+        f"🔗 Confluence: {conf_txt}\n\n"
         f"{analysis}\n\n"
-        f"{CLOCK} {now}\n"
+        f"{CLOCK} {now} | #{tf}\n"
         f"#XAUUSD #{action} #MSNR"
     )
     ok = send_message(msg)
@@ -137,12 +150,13 @@ def send_order_executed(pos_info, screenshot_path=None):
         f"{STOP} SL: <code>{pos_info['sl']:.2f}</code>\n"
         f"{TARGET} TP: <code>{pos_info['tp']:.2f}</code>\n"
         f"{BOX} Lot: <code>{pos_info['volume']}</code>\n\n"
+        f"<i>Chart da duoc ve SL/TP + MSNR levels</i>\n"
         f"{CLOCK} {now}"
     )
 
     if screenshot_path:
         ok = send_photo(screenshot_path, caption)
-        log.info(f"Order executed + screenshot OK={ok}")
+        log.info(f"Order executed + chart screenshot OK={ok}")
     else:
         ok = send_message(caption)
         log.info(f"Order executed (no screenshot) OK={ok}")
@@ -171,11 +185,11 @@ def send_trail_activated(pos_info, new_sl):
 
 
 def send_order_closed(pos_info, close_price, pnl):
-    action  = pos_info["action"]
-    result  = "THANG" if pnl > 0 else "THUA"
-    emoji   = GREEN if pnl > 0 else RED
-    arr     = UP if action == "BUY" else DOWN
-    now     = datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")
+    action = pos_info["action"]
+    result = "THANG" if pnl > 0 else "THUA"
+    emoji  = GREEN if pnl > 0 else RED
+    arr    = UP if action == "BUY" else DOWN
+    now    = datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")
 
     msg = (
         f"{emoji} <b>Lenh dong ({result}) {DASH} XAUUSD</b>\n\n"
@@ -192,7 +206,7 @@ def send_order_closed(pos_info, close_price, pnl):
 
 def test_connection():
     ok = send_message(
-        f"{CHECK} <b>MSNR System</b> ket noi Telegram thanh cong!\n"
-        f"Bot san sang nhan tin hieu giao dich XAUUSD."
+        f"{CHECK} <b>MSNR System v2.3</b> online!\n"
+        f"Telegram ket noi thanh cong. San sang nhan tin hieu XAUUSD."
     )
     return ok

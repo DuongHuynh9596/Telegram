@@ -14,7 +14,10 @@ from telegram_notify import (send_signal_alert, send_order_executed,
                               test_connection)
 
 MAGIC = 20260607
-SCREENSHOT_PATH = r"C:\MSNR_System\signals\chart_screenshot.png"
+# EA saves screenshot to Common\Files — this is the fixed path on this VPS
+COMMON_FILES    = r"C:\Users\durable1\AppData\Roaming\MetaQuotes\Terminal\Common\Files"
+SCREENSHOT_PATH = os.path.join(COMMON_FILES, "msnr_chart.png")
+LAST_SCREENSHOT_MTIME = 0.0
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 logging.basicConfig(
@@ -28,33 +31,29 @@ logging.basicConfig(
 log = logging.getLogger("MSNR.Main")
 
 TF_MAP = {
-    "M1" : mt5.TIMEFRAME_M1,  "M5" : mt5.TIMEFRAME_M5,
-    "M15": mt5.TIMEFRAME_M15, "M30": mt5.TIMEFRAME_M30,
-    "H1" : mt5.TIMEFRAME_H1,  "H4" : mt5.TIMEFRAME_H4,
-    "D1" : mt5.TIMEFRAME_D1,
+    "M1":mt5.TIMEFRAME_M1,"M5":mt5.TIMEFRAME_M5,
+    "M15":mt5.TIMEFRAME_M15,"M30":mt5.TIMEFRAME_M30,
+    "H1":mt5.TIMEFRAME_H1,"H4":mt5.TIMEFRAME_H4,"D1":mt5.TIMEFRAME_D1,
 }
 
-# ── Position tracker ──────────────────────────────────────────────
 # ticket -> {action, price_open, sl, tp, volume, trail_notified}
 g_positions = {}
 
 
-def take_screenshot():
-    """Chup man hinh (Session 2 = RDP, co the dung PIL)"""
-    try:
-        from PIL import ImageGrab
-        img = ImageGrab.grab()
-        os.makedirs(os.path.dirname(SCREENSHOT_PATH), exist_ok=True)
-        img.save(SCREENSHOT_PATH)
-        log.info(f"Screenshot saved: {SCREENSHOT_PATH}")
-        return SCREENSHOT_PATH
-    except Exception as e:
-        log.warning(f"Screenshot failed: {e}")
+def get_new_screenshot():
+    """Tra ve path neu co screenshot moi tu EA, None neu khong"""
+    global LAST_SCREENSHOT_MTIME
+    if not os.path.exists(SCREENSHOT_PATH):
         return None
+    mtime = os.path.getmtime(SCREENSHOT_PATH)
+    if mtime > LAST_SCREENSHOT_MTIME:
+        LAST_SCREENSHOT_MTIME = mtime
+        return SCREENSHOT_PATH
+    return None
 
 
 def monitor_positions():
-    """Theo doi lenh mo: phat hien lenh moi / dong / trail"""
+    global LAST_SCREENSHOT_MTIME
     positions = mt5.positions_get(symbol=SYMBOL) or []
     current   = set()
 
@@ -75,40 +74,36 @@ def monitor_positions():
         }
 
         if ticket not in g_positions:
-            # ── Lenh moi: chup anh + gui Telegram ──────────────
+            # New position — wait briefly for EA to take screenshot
             log.info(f"New position #{ticket} {action} @ {pos.price_open}")
             g_positions[ticket] = {**pos_info, "trail_notified": False}
-            screenshot = take_screenshot()
+            time.sleep(3)   # give EA time to save screenshot
+            screenshot = get_new_screenshot()
             send_order_executed(pos_info, screenshot)
-
         else:
-            # ── Kiem tra trail 1R ──────────────────────────────
+            # Check trail 1R activation
             prev = g_positions[ticket]
             if not prev["trail_notified"]:
-                # BUY: SL da duoc doi len tren entry (lock profit)
-                if action == "BUY" and pos.sl >= pos.price_open:
+                if action == "BUY"  and pos.sl >= pos.price_open:
                     send_trail_activated(pos_info, pos.sl)
                     g_positions[ticket]["trail_notified"] = True
-                # SELL: SL da duoc doi xuong duoi entry (lock profit)
                 elif action == "SELL" and 0 < pos.sl <= pos.price_open:
                     send_trail_activated(pos_info, pos.sl)
                     g_positions[ticket]["trail_notified"] = True
-            # Cap nhat SL hien tai
             g_positions[ticket]["sl"] = pos.sl
 
-    # ── Lenh da dong ──────────────────────────────────────────────
+    # Closed positions
     for ticket in list(g_positions.keys()):
         if ticket not in current:
             prev = g_positions.pop(ticket)
             log.info(f"Position #{ticket} closed")
-            # Lay P&L tu lich su
             pnl, close_price = 0.0, 0.0
             try:
                 deals = mt5.history_deals_get(position=ticket)
                 if deals:
                     for d in deals:
                         pnl += d.profit + d.swap + d.commission
-                        if d.entry == 1:          # DEAL_ENTRY_OUT
+                        if d.entry == 1:
                             close_price = d.price
             except Exception:
                 pass
@@ -144,7 +139,6 @@ def get_ohlcv(symbol, tf, n):
 
 
 def run_cycle():
-    # 1. Signal detection
     df = get_ohlcv(SYMBOL, PRIMARY_TF, LOOKBACK_BARS)
     if df.empty:
         return
@@ -157,10 +151,8 @@ def run_cycle():
     price   = tick.bid
     info    = mt5.account_info()
     balance = info.balance if info else 10000.0
-    lot     = calc_lot(balance)
 
-    log.info(f"Cycle | {SYMBOL} Price:{price:.2f} | Balance:{balance:.2f} | "
-             f"Lot:{lot} | SL:${FIXED_SL_USD} | Trail:+${TRAIL_TRIGGER}->${TRAIL_LOCK_USD}")
+    log.info(f"Cycle | {SYMBOL} Price:{price:.2f} | Balance:{balance:.2f}")
 
     detector   = MSNRDetector(df)
     levels     = detector.detect_all()
@@ -176,39 +168,31 @@ def run_cycle():
     signal = sg.generate(trendlines)
 
     if signal:
-        log.info(f"SIGNAL -> {signal['action']} "
-                 f"Entry:{signal['entry']} SL:{signal['sl']} TP:{signal['tp']} "
-                 f"Lot:{signal['lot']} RR:{signal['rr']}:1")
-        send_signal_alert(signal)           # <-- Telegram: signal alert
+        log.info(f"SIGNAL {signal['action']} Entry:{signal['entry']} "
+                 f"SL:{signal['sl']} TP:{signal['tp']} RR:{signal['rr']}:1")
+        send_signal_alert(signal)
     else:
         log.info("No setup this cycle")
 
     sg.write_signal(signal)
-
-    # 2. Position monitoring (lenh moi / dong / trail)
     monitor_positions()
 
 
 def main():
     log.info("=" * 55)
-    log.info("MSNR v2.2 | SL=$18 | Trail +$23->$18 | Telegram ON")
+    log.info("MSNR v2.3 | Chart drawing + Detailed analysis")
     log.info("=" * 55)
 
     retries = 0
     while not connect_mt5():
         retries += 1
         if retries > 5:
-            log.critical("Cannot connect MT5 — aborting")
-            sys.exit(1)
-        log.warning(f"Retry {retries}/5 in 30s...")
-        time.sleep(30)
+            log.critical("Cannot connect MT5"); sys.exit(1)
+        log.warning(f"Retry {retries}/5 in 30s..."); time.sleep(30)
 
     mt5.symbol_select(SYMBOL, True)
-    log.info(f"{SYMBOL} added to MarketWatch")
-
-    # Test Telegram connection on startup
     ok = test_connection()
-    log.info(f"Telegram test message: {'OK' if ok else 'FAILED'}")
+    log.info(f"Telegram: {'OK' if ok else 'FAILED'}")
 
     try:
         while True:
@@ -218,7 +202,7 @@ def main():
                 log.exception(f"Cycle error: {e}")
             time.sleep(60)
     except KeyboardInterrupt:
-        log.info("Stopped by user.")
+        log.info("Stopped.")
     finally:
         mt5.shutdown()
 
