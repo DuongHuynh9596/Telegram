@@ -9,6 +9,7 @@ from config import (SYMBOL, PRIMARY_TF, LOOKBACK_BARS, LOG_FILE,
 from msnr_detector import MSNRDetector
 from trendline import TrendlineEngine
 from signal_generator import SignalGenerator, calc_lot
+from chart_generator import generate as generate_chart
 from telegram_notify import (send_signal_alert, send_order_executed,
                               send_trail_activated, send_order_closed,
                               test_connection)
@@ -115,21 +116,22 @@ def monitor_positions():
 def _should_notify_telegram(signal):
     """
     Skip Telegram signal alert neu:
-    1. Dang co lenh mo (khong spam khi dang trong trade)
-    2. Tin hieu trung lap (cung action + entry voi lan gui truoc)
+    1. Dang co lenh mo — khong spam khi dang trong trade
+    2. Da gui bat ky signal nao roi — doi reset ve NONE moi gui tiep
+       (tranh BUY -> SELL -> BUY lien tuc khi gia dao dong)
     """
     global g_last_tg_signal
 
-    # Rule 1: skip neu dang co position voi magic MSNR
+    # Rule 1: skip neu dang co lenh mo
     positions = mt5.positions_get(symbol=SYMBOL) or []
     if any(p.magic == MAGIC for p in positions):
-        log.info("TG skip: dang co lenh mo — khong gui signal moi")
+        log.info("TG skip: dang co lenh mo")
         return False
 
-    # Rule 2: skip neu trung lap (cung action + entry)
-    if (signal.get('action') == g_last_tg_signal['action'] and
-            signal.get('entry') == g_last_tg_signal['entry']):
-        log.info("TG skip: tin hieu trung lap — da gui roi")
+    # Rule 2: da gui signal (bat ky direction nao) -> doi NONE moi gui lai
+    # Tranh BUY/SELL flip-flop moi 60s
+    if g_last_tg_signal['action'] is not None:
+        log.info(f"TG skip: da gui {g_last_tg_signal['action']} roi, doi reset")
         return False
 
     return True
@@ -196,7 +198,9 @@ def run_cycle():
         log.info(f"SIGNAL {signal['action']} Entry:{signal['entry']} "
                  f"SL:{signal['sl']} TP:{signal['tp']} RR:{signal['rr']}:1")
         if _should_notify_telegram(signal):
-            send_signal_alert(signal)
+            # Ve chart truoc khi gui Telegram
+            chart_path = generate_chart(df, signal, fresh, trendlines)
+            send_signal_alert(signal, chart_path)
             g_last_tg_signal['action'] = signal['action']
             g_last_tg_signal['entry']  = signal['entry']
         # else: signal van ghi ra file cho EA, chi bo qua TG thoi

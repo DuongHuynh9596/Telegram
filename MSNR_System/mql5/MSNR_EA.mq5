@@ -142,8 +142,8 @@ void DrawSetup(string action, double exec_price, double sl, double tp,
         if(lv_types[i] == "V") { lv_col = c_v; lv_label = "V-Level"; }
         else if(lv_types[i] == "G") { lv_col = c_gap; lv_label = "Gap-SnR"; }
 
-        string name     = "MSNR_LV_" + IntToString(i);
-        string name_lbl = "MSNR_LV_L" + IntToString(i);
+        string name     = "MSNR_LV_" + IntegerToString(i);
+        string name_lbl = "MSNR_LV_L" + IntegerToString(i);
         DrawHLine(name, lv_prices[i], lv_col, STYLE_DOT, 1);
         DrawText(name_lbl, lv_prices[i],
                  lv_label + " " + DoubleToString(lv_prices[i], 2) + " (H1)",
@@ -253,15 +253,17 @@ bool ReadSignal(string &action, double &entry, double &sl, double &tp,
     if(lv_cnt > 6) lv_cnt = 6;
     for(int i = 0; i < lv_cnt; i++)
     {
-        lv_types[i]  = JSONStr(content, "lv" + IntToString(i) + "_t");
-        lv_prices[i] = JSONDbl(content, "lv" + IntToString(i) + "_p");
+        string kt = "lv" + IntegerToString(i) + "_t";
+        string kp = "lv" + IntegerToString(i) + "_p";
+        lv_types[i]  = JSONStr(content, kt);
+        lv_prices[i] = JSONDbl(content, kp);
     }
 
     return (action != "" && action != "NONE");
 }
 
 //+------------------------------------------------------------------+
-string JSONStr(const string &j, const string &k)
+string JSONStr(string j, string k)
 {
     string s = "\"" + k + "\": \"";
     int p = StringFind(j, s); if(p < 0) return "";
@@ -269,7 +271,7 @@ string JSONStr(const string &j, const string &k)
     int e = StringFind(j, "\"", p); if(e < 0) return "";
     return StringSubstr(j, p, e - p);
 }
-double JSONDbl(const string &j, const string &k)
+double JSONDbl(string j, string k)
 {
     string s = "\"" + k + "\": ";
     int p = StringFind(j, s); if(p < 0) return 0;

@@ -99,7 +99,7 @@ def _format_analysis(signal):
     return "\n".join(lines)
 
 
-def send_signal_alert(signal):
+def send_signal_alert(signal, chart_path=None):
     action = signal["action"]
     entry  = signal["entry"]
     sl     = signal["sl"]
@@ -133,8 +133,12 @@ def send_signal_alert(signal):
         f"{CLOCK} {now} | #{tf}\n"
         f"#XAUUSD #{action} #MSNR"
     )
-    ok = send_message(msg)
-    log.info(f"Signal alert sent OK={ok}")
+    if chart_path:
+        ok = send_photo(chart_path, msg)
+        log.info(f"Signal alert + chart sent OK={ok}")
+    else:
+        ok = send_message(msg)
+        log.info(f"Signal alert (text only) sent OK={ok}")
     return ok
 
 
