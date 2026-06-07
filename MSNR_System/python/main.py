@@ -14,6 +14,8 @@ from telegram_notify import (send_signal_alert, send_order_executed,
                               test_connection)
 
 MAGIC = 20260607
+# Track last signal sent to Telegram — tranh duplicate notification
+g_last_tg_signal = {'action': None, 'entry': None}
 # EA saves screenshot to Common\Files — this is the fixed path on this VPS
 COMMON_FILES    = r"C:\Users\durable1\AppData\Roaming\MetaQuotes\Terminal\Common\Files"
 SCREENSHOT_PATH = os.path.join(COMMON_FILES, "msnr_chart.png")
@@ -110,6 +112,29 @@ def monitor_positions():
             send_order_closed(prev, close_price, pnl)
 
 
+def _should_notify_telegram(signal):
+    """
+    Skip Telegram signal alert neu:
+    1. Dang co lenh mo (khong spam khi dang trong trade)
+    2. Tin hieu trung lap (cung action + entry voi lan gui truoc)
+    """
+    global g_last_tg_signal
+
+    # Rule 1: skip neu dang co position voi magic MSNR
+    positions = mt5.positions_get(symbol=SYMBOL) or []
+    if any(p.magic == MAGIC for p in positions):
+        log.info("TG skip: dang co lenh mo — khong gui signal moi")
+        return False
+
+    # Rule 2: skip neu trung lap (cung action + entry)
+    if (signal.get('action') == g_last_tg_signal['action'] and
+            signal.get('entry') == g_last_tg_signal['entry']):
+        log.info("TG skip: tin hieu trung lap — da gui roi")
+        return False
+
+    return True
+
+
 def connect_mt5():
     for attempt, kwargs in enumerate([
         {},
@@ -170,8 +195,15 @@ def run_cycle():
     if signal:
         log.info(f"SIGNAL {signal['action']} Entry:{signal['entry']} "
                  f"SL:{signal['sl']} TP:{signal['tp']} RR:{signal['rr']}:1")
-        send_signal_alert(signal)
+        if _should_notify_telegram(signal):
+            send_signal_alert(signal)
+            g_last_tg_signal['action'] = signal['action']
+            g_last_tg_signal['entry']  = signal['entry']
+        # else: signal van ghi ra file cho EA, chi bo qua TG thoi
     else:
+        # Reset tracker khi het setup
+        g_last_tg_signal['action'] = None
+        g_last_tg_signal['entry']  = None
         log.info("No setup this cycle")
 
     sg.write_signal(signal)
