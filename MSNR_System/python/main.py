@@ -10,17 +10,13 @@ from msnr_detector import MSNRDetector
 from trendline import TrendlineEngine
 from signal_generator import SignalGenerator, calc_lot
 from chart_generator import generate as generate_chart
-from telegram_notify import (send_signal_alert, send_order_executed,
-                              send_trail_activated, send_order_closed,
-                              test_connection)
+from telegram_notify import (send_signal_alert, send_trail_activated,
+                              send_order_closed, test_connection)
 
-MAGIC = 20260607
-# Track last signal sent to Telegram — tranh duplicate notification
-g_last_tg_signal = {'action': None, 'entry': None}
-# EA saves screenshot to Common\Files — this is the fixed path on this VPS
-COMMON_FILES    = r"C:\Users\durable1\AppData\Roaming\MetaQuotes\Terminal\Common\Files"
+MAGIC        = 20260607
+COMMON_FILES = r"C:\Users\durable1\AppData\Roaming\MetaQuotes\Terminal\Common\Files"
 SCREENSHOT_PATH = os.path.join(COMMON_FILES, "msnr_chart.png")
-LAST_SCREENSHOT_MTIME = 0.0
+LAST_SS_MTIME   = 0.0
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 logging.basicConfig(
@@ -34,29 +30,45 @@ logging.basicConfig(
 log = logging.getLogger("MSNR.Main")
 
 TF_MAP = {
-    "M1":mt5.TIMEFRAME_M1,"M5":mt5.TIMEFRAME_M5,
+    "M1":mt5.TIMEFRAME_M1,  "M5":mt5.TIMEFRAME_M5,
     "M15":mt5.TIMEFRAME_M15,"M30":mt5.TIMEFRAME_M30,
-    "H1":mt5.TIMEFRAME_H1,"H4":mt5.TIMEFRAME_H4,"D1":mt5.TIMEFRAME_D1,
+    "H1":mt5.TIMEFRAME_H1,  "H4":mt5.TIMEFRAME_H4,
+    "D1":mt5.TIMEFRAME_D1,
 }
 
+# ── State ─────────────────────────────────────────────────────────
 # ticket -> {action, price_open, sl, tp, volume, trail_notified}
 g_positions = {}
 
+# Luu du lieu cycle gan nhat de dung khi EA vao lenh
+g_last_signal      = None   # signal dict
+g_last_df          = None   # OHLCV dataframe
+g_last_fresh       = []     # fresh levels
+g_last_trendlines  = []     # trendlines
 
-def get_new_screenshot():
-    """Tra ve path neu co screenshot moi tu EA, None neu khong"""
-    global LAST_SCREENSHOT_MTIME
+
+def get_ea_screenshot():
+    """Doc screenshot tu EA (Common Files), None neu khong co moi"""
+    global LAST_SS_MTIME
     if not os.path.exists(SCREENSHOT_PATH):
         return None
     mtime = os.path.getmtime(SCREENSHOT_PATH)
-    if mtime > LAST_SCREENSHOT_MTIME:
-        LAST_SCREENSHOT_MTIME = mtime
+    if mtime > LAST_SS_MTIME:
+        LAST_SS_MTIME = mtime
         return SCREENSHOT_PATH
     return None
 
 
 def monitor_positions():
-    global LAST_SCREENSHOT_MTIME
+    """
+    Khi EA vao lenh moi:
+      1. Tao chart (Python-generated dark theme)
+      2. Gui Telegram: analysis + chart (1 tin duy nhat)
+    Khi trail 1R: gui update SL
+    Khi dong lenh: gui P&L
+    """
+    global g_positions
+
     positions = mt5.positions_get(symbol=SYMBOL) or []
     current   = set()
 
@@ -77,14 +89,55 @@ def monitor_positions():
         }
 
         if ticket not in g_positions:
-            # New position — wait briefly for EA to take screenshot
-            log.info(f"New position #{ticket} {action} @ {pos.price_open}")
+            # ── Lenh moi: EA vua action ───────────────────────────
+            log.info(f"EA action: new position #{ticket} {action} @ {pos.price_open}")
             g_positions[ticket] = {**pos_info, "trail_notified": False}
-            time.sleep(3)   # give EA time to save screenshot
-            screenshot = get_new_screenshot()
-            send_order_executed(pos_info, screenshot)
+
+            # Doi EA chup screenshot (neu co)
+            time.sleep(3)
+            ea_screenshot = get_ea_screenshot()
+
+            # Chon chart tot nhat: EA screenshot > Python-generated
+            chart_path = ea_screenshot
+
+            if not chart_path and g_last_df is not None and g_last_signal is not None:
+                # Dung Python chart neu EA chua kip chup
+                py_signal = dict(g_last_signal)
+                # Cap nhat entry chinh xac tu MT5 (gia thuc te vao lenh)
+                py_signal["entry"] = pos.price_open
+                py_signal["sl"]    = pos.sl
+                py_signal["tp"]    = pos.tp
+                chart_path = generate_chart(
+                    g_last_df, py_signal, g_last_fresh, g_last_trendlines
+                )
+
+            # Gui 1 tin duy nhat: analysis + chart
+            signal_data = g_last_signal or {
+                "action"        : action,
+                "entry"         : pos.price_open,
+                "sl"            : pos.sl,
+                "tp"            : pos.tp,
+                "lot"           : pos.volume,
+                "sl_usd"        : FIXED_SL_USD,
+                "rr"            : round(abs(pos.tp - pos.price_open) / FIXED_SL_USD, 1),
+                "confluence"    : 0,
+                "p3_trendline"  : False,
+                "fresh_level"   : False,
+                "analysis_items": [],
+                "analysis_tf"   : PRIMARY_TF,
+            }
+            # Gan ticket vao signal de hien thi
+            signal_data = dict(signal_data)
+            signal_data["ticket"]      = ticket
+            signal_data["entry"]       = pos.price_open
+            signal_data["sl"]          = pos.sl
+            signal_data["tp"]          = pos.tp
+            signal_data["lot"]         = pos.volume
+
+            send_signal_alert(signal_data, chart_path)
+
         else:
-            # Check trail 1R activation
+            # ── Check trail 1R ────────────────────────────────────
             prev = g_positions[ticket]
             if not prev["trail_notified"]:
                 if action == "BUY"  and pos.sl >= pos.price_open:
@@ -95,7 +148,7 @@ def monitor_positions():
                     g_positions[ticket]["trail_notified"] = True
             g_positions[ticket]["sl"] = pos.sl
 
-    # Closed positions
+    # ── Lenh da dong ─────────────────────────────────────────────
     for ticket in list(g_positions.keys()):
         if ticket not in current:
             prev = g_positions.pop(ticket)
@@ -111,30 +164,6 @@ def monitor_positions():
             except Exception:
                 pass
             send_order_closed(prev, close_price, pnl)
-
-
-def _should_notify_telegram(signal):
-    """
-    Skip Telegram signal alert neu:
-    1. Dang co lenh mo — khong spam khi dang trong trade
-    2. Da gui bat ky signal nao roi — doi reset ve NONE moi gui tiep
-       (tranh BUY -> SELL -> BUY lien tuc khi gia dao dong)
-    """
-    global g_last_tg_signal
-
-    # Rule 1: skip neu dang co lenh mo
-    positions = mt5.positions_get(symbol=SYMBOL) or []
-    if any(p.magic == MAGIC for p in positions):
-        log.info("TG skip: dang co lenh mo")
-        return False
-
-    # Rule 2: da gui signal (bat ky direction nao) -> doi NONE moi gui lai
-    # Tranh BUY/SELL flip-flop moi 60s
-    if g_last_tg_signal['action'] is not None:
-        log.info(f"TG skip: da gui {g_last_tg_signal['action']} roi, doi reset")
-        return False
-
-    return True
 
 
 def connect_mt5():
@@ -166,6 +195,8 @@ def get_ohlcv(symbol, tf, n):
 
 
 def run_cycle():
+    global g_last_signal, g_last_df, g_last_fresh, g_last_trendlines
+
     df = get_ohlcv(SYMBOL, PRIMARY_TF, LOOKBACK_BARS)
     if df.empty:
         return
@@ -195,28 +226,27 @@ def run_cycle():
     signal = sg.generate(trendlines)
 
     if signal:
-        log.info(f"SIGNAL {signal['action']} Entry:{signal['entry']} "
-                 f"SL:{signal['sl']} TP:{signal['tp']} RR:{signal['rr']}:1")
-        if _should_notify_telegram(signal):
-            # Ve chart truoc khi gui Telegram
-            chart_path = generate_chart(df, signal, fresh, trendlines)
-            send_signal_alert(signal, chart_path)
-            g_last_tg_signal['action'] = signal['action']
-            g_last_tg_signal['entry']  = signal['entry']
-        # else: signal van ghi ra file cho EA, chi bo qua TG thoi
+        log.info(f"Setup found: {signal['action']} Entry:{signal['entry']} "
+                 f"SL:{signal['sl']} TP:{signal['tp']} RR:{signal['rr']}:1 "
+                 f"— waiting for EA to action...")
+        # Luu lai de dung khi EA vao lenh
+        g_last_signal     = signal
+        g_last_df         = df.copy()
+        g_last_fresh      = fresh
+        g_last_trendlines = trendlines
     else:
-        # Reset tracker khi het setup
-        g_last_tg_signal['action'] = None
-        g_last_tg_signal['entry']  = None
         log.info("No setup this cycle")
+        g_last_signal = None   # reset khi khong con setup
 
     sg.write_signal(signal)
+
+    # Monitor: phat hien EA vao lenh -> moi gui Telegram
     monitor_positions()
 
 
 def main():
     log.info("=" * 55)
-    log.info("MSNR v2.3 | Chart drawing + Detailed analysis")
+    log.info("MSNR v2.5 | Notify on EA action only")
     log.info("=" * 55)
 
     retries = 0
