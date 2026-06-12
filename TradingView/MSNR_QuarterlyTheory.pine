@@ -1,0 +1,334 @@
+// ============================================================
+// MSNR + Quarterly Theory Indicator
+// Market Structure | Narrative | Range + Q1-Q2-Q3-Q4
+// Pine Script v5 — TradingView
+// ============================================================
+//@version=5
+indicator("MSNR + Quarterly Theory [ICT]", overlay=true,
+          max_lines_count=500, max_labels_count=500, max_boxes_count=300)
+
+// ============================================================
+// INPUTS
+// ============================================================
+grp_qt  = "⏰ Quarterly Theory"
+show_q      = input.bool(true,  "Hien thi Q1-Q4 Background", group=grp_qt)
+show_qlabel = input.bool(true,  "Hien thi nhan Q1-Q4",        group=grp_qt)
+utc_offset  = input.int(7,      "UTC Offset (VN = +7)",        group=grp_qt, minval=-12, maxval=14)
+
+grp_ms  = "📐 Market Structure"
+swing_len   = input.int(10,     "Do dai Swing (bars)",         group=grp_ms, minval=3, maxval=50)
+show_bos    = input.bool(true,  "Hien thi BOS / CHoCH",        group=grp_ms)
+show_swings = input.bool(true,  "Hien thi HH/HL/LH/LL",       group=grp_ms)
+
+grp_nr  = "📊 Narrative & Range"
+range_len   = input.int(50,     "Do dai Range (bars)",         group=grp_nr, minval=20)
+show_eq     = input.bool(true,  "Hien thi Equilibrium 50%",    group=grp_nr)
+show_ob     = input.bool(true,  "Hien thi Order Block",        group=grp_nr)
+show_fvg    = input.bool(true,  "Hien thi Fair Value Gap",     group=grp_nr)
+
+grp_sig = "🎯 Tin hieu BUY / SELL"
+show_sig    = input.bool(true,  "Hien thi mui ten BUY/SELL",   group=grp_sig)
+strict_mode = input.bool(true,  "Strict Mode (can du 3/3 dieu kien)", group=grp_sig)
+
+// ============================================================
+// COLORS
+// ============================================================
+c_bull   = #00C853
+c_bear   = #D50000
+c_q1     = color.new(#2962FF, 88)   // xanh duong — Accumulation
+c_q2     = color.new(#FF6D00, 88)   // cam       — Manipulation
+c_q3     = color.new(#00897B, 85)   // xanh la   — Distribution (True Move)
+c_q4     = color.new(#6A1B9A, 88)   // tim       — Retracement
+c_eq     = color.new(#FFD600, 60)
+c_ob_b   = color.new(#00C853, 82)
+c_ob_s   = color.new(#D50000, 82)
+c_fvg_b  = color.new(#00C853, 90)
+c_fvg_s  = color.new(#D50000, 90)
+
+// ============================================================
+// QUARTERLY THEORY
+// Q1  00:00-06:00  Tich luy   (Asian)
+// Q2  06:00-12:00  Thao tung  (London)
+// Q3  12:00-18:00  Phan phoi  (NY — True Move)
+// Q4  18:00-00:00  Hoi phuc   (NY Close)
+// ============================================================
+f_quarter(t) =>
+    h = hour(t, "UTC+" + str.tostring(utc_offset))
+    h < 6 ? 1 : h < 12 ? 2 : h < 18 ? 3 : 4
+
+cur_q      = f_quarter(time)
+prev_q     = f_quarter(time[1])
+new_q      = cur_q != prev_q
+
+q_col = cur_q == 1 ? c_q1 : cur_q == 2 ? c_q2 : cur_q == 3 ? c_q3 : c_q4
+bgcolor(show_q ? q_col : na, title="Quarter BG")
+
+if show_qlabel and new_q and not na(time[1])
+    _txt = cur_q == 1 ? "Q1 | Tich Luy\n(Accumulation)" :
+           cur_q == 2 ? "Q2 | Thao Tung\n(Manipulation)" :
+           cur_q == 3 ? "Q3 | Phan Phoi\n(True Move)" :
+                        "Q4 | Hoi Phuc\n(Retracement)"
+    _col = cur_q == 1 ? #2962FF : cur_q == 2 ? #FF6D00 :
+           cur_q == 3 ? #00897B : #6A1B9A
+    label.new(bar_index, high * 1.001, _txt,
+              style      = label.style_label_down,
+              color      = _col,
+              textcolor  = color.white,
+              size       = size.small)
+
+// ============================================================
+// MARKET STRUCTURE — Swing Points + BOS / CHoCH
+// ============================================================
+ph = ta.pivothigh(high, swing_len, swing_len)
+pl = ta.pivotlow (low,  swing_len, swing_len)
+
+var float last_ph     = na
+var float last_pl     = na
+var float prev_ph     = na
+var float prev_pl     = na
+var int   last_ph_bar = na
+var int   last_pl_bar = na
+
+if not na(ph)
+    prev_ph     := last_ph
+    last_ph     := ph
+    last_ph_bar := bar_index[swing_len]
+
+if not na(pl)
+    prev_pl     := last_pl
+    last_pl     := pl
+    last_pl_bar := bar_index[swing_len]
+
+// Swing structure labels
+if show_swings and not na(ph)
+    _is_hh = not na(prev_ph) and ph > prev_ph
+    label.new(bar_index[swing_len], ph,
+              _is_hh ? "HH" : "LH",
+              style     = label.style_label_down,
+              color     = _is_hh ? color.new(c_bull, 30) : color.new(c_bear, 30),
+              textcolor = color.white,
+              size      = size.tiny)
+
+if show_swings and not na(pl)
+    _is_ll = not na(prev_pl) and pl < prev_pl
+    label.new(bar_index[swing_len], pl,
+              _is_ll ? "LL" : "HL",
+              style     = label.style_label_up,
+              color     = _is_ll ? color.new(c_bear, 30) : color.new(c_bull, 30),
+              textcolor = color.white,
+              size      = size.tiny)
+
+// Structure state
+var string mkt_struct = "NEUTRAL"
+
+var bool bull_bos   = false
+var bool bear_bos   = false
+var bool bull_choch = false
+var bool bear_choch = false
+
+bull_bos   := false
+bear_bos   := false
+bull_choch := false
+bear_choch := false
+
+if not na(last_ph) and close > last_ph and close[1] <= last_ph
+    if mkt_struct == "BULLISH"
+        bull_bos   := true
+    else
+        bull_choch := true
+    mkt_struct := "BULLISH"
+
+if not na(last_pl) and close < last_pl and close[1] >= last_pl
+    if mkt_struct == "BEARISH"
+        bear_bos   := true
+    else
+        bear_choch := true
+    mkt_struct := "BEARISH"
+
+if show_bos
+    if bull_bos
+        label.new(bar_index, low * 0.9995, "BOS ↑",
+                  style=label.style_label_up, color=color.new(c_bull, 20),
+                  textcolor=color.white, size=size.tiny)
+    if bear_bos
+        label.new(bar_index, high * 1.0005, "BOS ↓",
+                  style=label.style_label_down, color=color.new(c_bear, 20),
+                  textcolor=color.white, size=size.tiny)
+    if bull_choch
+        label.new(bar_index, low * 0.9993, "CHoCH ↑",
+                  style=label.style_label_up, color=color.new(#00BCD4, 10),
+                  textcolor=color.white, size=size.small)
+    if bear_choch
+        label.new(bar_index, high * 1.0007, "CHoCH ↓",
+                  style=label.style_label_down, color=color.new(#FF9800, 10),
+                  textcolor=color.white, size=size.small)
+
+// BOS lines
+if show_bos and not na(last_ph) and bull_bos
+    line.new(last_ph_bar, last_ph, bar_index, last_ph,
+             color=color.new(c_bull, 50), style=line.style_dashed, width=1)
+if show_bos and not na(last_pl) and bear_bos
+    line.new(last_pl_bar, last_pl, bar_index, last_pl,
+             color=color.new(c_bear, 50), style=line.style_dashed, width=1)
+
+// ============================================================
+// NARRATIVE — Premium / Discount (Equilibrium)
+// ============================================================
+rng_high = ta.highest(high, range_len)
+rng_low  = ta.lowest (low,  range_len)
+equil    = (rng_high + rng_low) / 2
+
+in_discount = close < equil
+in_premium  = close > equil
+
+plot(show_eq ? equil : na, "Equilibrium 50%", color=c_eq, linewidth=1)
+
+// ============================================================
+// ORDER BLOCKS
+// ============================================================
+var float bull_ob_h = na
+var float bull_ob_l = na
+var int   bull_ob_b = na
+var float bear_ob_h = na
+var float bear_ob_l = na
+var int   bear_ob_b = na
+
+if bull_choch or bull_bos
+    for i = 1 to 5
+        if close[i] < open[i]
+            bull_ob_h := high[i]
+            bull_ob_l := low[i]
+            bull_ob_b := bar_index - i
+            break
+
+if bear_choch or bear_bos
+    for i = 1 to 5
+        if close[i] > open[i]
+            bear_ob_h := high[i]
+            bear_ob_l := low[i]
+            bear_ob_b := bar_index - i
+            break
+
+if show_ob and not na(bull_ob_h) and (bull_choch or bull_bos)
+    box.new(bull_ob_b, bull_ob_h, bar_index + 30, bull_ob_l,
+            border_color=c_bull, bgcolor=c_ob_b, border_width=1)
+    label.new(bull_ob_b, bull_ob_h, "Bull OB",
+              style=label.style_label_right, color=color.new(c_bull, 20),
+              textcolor=color.white, size=size.tiny)
+
+if show_ob and not na(bear_ob_h) and (bear_choch or bear_bos)
+    box.new(bear_ob_b, bear_ob_h, bar_index + 30, bear_ob_l,
+            border_color=c_bear, bgcolor=c_ob_s, border_width=1)
+    label.new(bear_ob_b, bear_ob_h, "Bear OB",
+              style=label.style_label_right, color=color.new(c_bear, 20),
+              textcolor=color.white, size=size.tiny)
+
+// ============================================================
+// FAIR VALUE GAP (FVG / Imbalance)
+// ============================================================
+bull_fvg_cond = low > high[2]
+bear_fvg_cond = high < low[2]
+
+if show_fvg and bull_fvg_cond
+    box.new(bar_index - 1, low, bar_index + 20, high[2],
+            border_color=color.new(c_bull, 60), bgcolor=c_fvg_b, border_width=1)
+
+if show_fvg and bear_fvg_cond
+    box.new(bar_index - 1, high, bar_index + 20, low[2],
+            border_color=color.new(c_bear, 60), bgcolor=c_fvg_s, border_width=1)
+
+// ============================================================
+// BUY / SELL SIGNALS — CONFLUENCE
+// ============================================================
+// BUY: CHoCH Tang + Vung Discount + Q2 hoac Q3
+// SELL: CHoCH Giam + Vung Premium + Q2 hoac Q3
+in_active_q = cur_q == 2 or cur_q == 3
+
+buy_cond_ms  = bull_choch                  // 1. Structure dao chieu tang
+buy_cond_nr  = in_discount                 // 2. Vung discount (gia re)
+buy_cond_qt  = in_active_q                 // 3. Dung gio giao dich
+
+sell_cond_ms = bear_choch                  // 1. Structure dao chieu giam
+sell_cond_nr = in_premium                  // 2. Vung premium (gia cao)
+sell_cond_qt = in_active_q                 // 3. Dung gio giao dich
+
+buy_signal  = show_sig and (strict_mode ?
+              (buy_cond_ms  and buy_cond_nr  and buy_cond_qt)  :
+              (buy_cond_ms  and (buy_cond_nr  or buy_cond_qt)))
+
+sell_signal = show_sig and (strict_mode ?
+              (sell_cond_ms and sell_cond_nr and sell_cond_qt) :
+              (sell_cond_ms and (sell_cond_nr or sell_cond_qt)))
+
+plotshape(buy_signal,
+          title     = "▲ BUY",
+          style     = shape.labelup,
+          location  = location.belowbar,
+          color     = c_bull,
+          textcolor = color.white,
+          text      = "▲ BUY",
+          size      = size.normal)
+
+plotshape(sell_signal,
+          title     = "▼ SELL",
+          style     = shape.labeldown,
+          location  = location.abovebar,
+          color     = c_bear,
+          textcolor = color.white,
+          text      = "▼ SELL",
+          size      = size.normal)
+
+// Alert
+alertcondition(buy_signal,  "MSNR BUY",  "MSNR + QT: BUY Signal!")
+alertcondition(sell_signal, "MSNR SELL", "MSNR + QT: SELL Signal!")
+
+// ============================================================
+// DASHBOARD — Top Right
+// ============================================================
+var table dash = table.new(position.top_right, 2, 7,
+                            bgcolor    = color.new(#0D0D0D, 70),
+                            border_color = color.new(color.gray, 60),
+                            border_width = 1,
+                            frame_color  = color.new(color.gray, 40),
+                            frame_width  = 1)
+
+if barstate.islast
+    q_txt = cur_q == 1 ? "Q1 — Tich Luy"    :
+            cur_q == 2 ? "Q2 — Thao Tung"   :
+            cur_q == 3 ? "Q3 — Phan Phoi"   : "Q4 — Hoi Phuc"
+    q_clr = cur_q == 1 ? #2962FF : cur_q == 2 ? #FF6D00 :
+            cur_q == 3 ? #00897B : #6A1B9A
+
+    s_clr = mkt_struct == "BULLISH" ? c_bull : mkt_struct == "BEARISH" ? c_bear : color.gray
+    z_txt = in_discount ? "DISCOUNT — BUY Zone" : "PREMIUM  — SELL Zone"
+    z_clr = in_discount ? c_bull : c_bear
+    b_txt = in_active_q ? "Q2/Q3 ACTIVE ✔" : "Q1/Q4 — Cho doi"
+    b_clr = in_active_q ? c_bull : color.gray
+
+    table.cell(dash, 0, 0, "MSNR + QT", text_color=color.white,
+               bgcolor=color.new(color.gray, 20), text_halign=text.align_center,
+               text_size=size.normal)
+    table.cell(dash, 1, 0, "Dashboard",  text_color=color.white,
+               bgcolor=color.new(color.gray, 20), text_halign=text.align_center,
+               text_size=size.normal)
+
+    table.cell(dash, 0, 1, "Quarter",    text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(dash, 1, 1, q_txt,        text_color=color.white, bgcolor=q_clr)
+
+    table.cell(dash, 0, 2, "Structure",  text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(dash, 1, 2, mkt_struct,   text_color=color.white, bgcolor=s_clr)
+
+    table.cell(dash, 0, 3, "Zone",       text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(dash, 1, 3, z_txt,        text_color=color.white, bgcolor=z_clr)
+
+    table.cell(dash, 0, 4, "Session",    text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(dash, 1, 4, b_txt,        text_color=color.white, bgcolor=b_clr)
+
+    table.cell(dash, 0, 5, "Equil 50%",  text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(dash, 1, 5, str.tostring(equil, "#.##"),
+               text_color=color.white, bgcolor=color.new(color.gray, 50))
+
+    sig_txt = buy_signal ? "▲ BUY SIGNAL!" : sell_signal ? "▼ SELL SIGNAL!" : "— Cho tin hieu"
+    sig_clr = buy_signal ? c_bull : sell_signal ? c_bear : color.new(color.gray, 40)
+    table.cell(dash, 0, 6, "Signal",     text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(dash, 1, 6, sig_txt,      text_color=color.white, bgcolor=sig_clr)
