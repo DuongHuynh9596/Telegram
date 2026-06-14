@@ -136,6 +136,32 @@ Note: the daily guard resets at **server midnight** (matching FTMO's daily reset
 while the True Open / quarter logic runs on **EST** — these are intentionally
 separate clocks.
 
+## SMT divergence filter (XAU vs DXY)
+
+An optional confirmation layer on top of the sweep. **SMT (Smart Money Technique)**
+compares Gold against a correlated instrument:
+
+- When XAU sweeps a **low** (bullish setup), an inversely-correlated **DXY/USDX**
+  *should* make a **higher high**. If it **fails to** → divergence → the sweep is
+  manipulation → **confirm the LONG**.
+- When XAU sweeps a **high** (bearish setup), DXY should make a **lower low**.
+  If it fails to → **confirm the SHORT**.
+
+| Input | Default | Meaning |
+|-------|---------|---------|
+| `InpUseSMT` | true | Require SMT divergence to take the trade |
+| `InpSMTSymbol` | `USDX` | The correlated symbol — **set the exact name your broker uses** |
+| `InpSMTInverse` | true | `true` for DXY/USDX (inverse); `false` for EURUSD (positive corr) |
+| `InpSMTLookback` | 10 | Entry-TF bars used to find the prior reference extreme |
+| `InpSMTBlockIfNoData` | false | If the symbol has no data: `false` = skip the filter, `true` = block trades |
+
+> ⚠️ **Symbol name matters.** Brokers name the dollar index differently: `DXY`,
+> `USDX`, `USDOLLAR`, `DX`… Open *Market Watch*, right-click → *Symbols*, find the
+> exact ticker, and put it in `InpSMTSymbol`. If your broker has no dollar index,
+> set `InpSMTSymbol=EURUSD` and `InpSMTInverse=false` (EURUSD is positively
+> correlated with Gold). On init the EA logs whether it found the symbol — check
+> the Experts log.
+
 ## Which one to use?
 
 - **v1 (breakout)** — simpler, fewer moving parts, good first test.

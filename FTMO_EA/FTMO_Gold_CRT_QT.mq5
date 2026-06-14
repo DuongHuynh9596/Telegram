@@ -68,6 +68,13 @@ input int    InpATRPeriod        = 14;     // ATR period
 input double InpTrailATRMult     = 2.0;    // Trailing distance = ATR * this
 input int    InpCloseAllHourEST  = 16;     // Force-flatten at this EST hour (end of Q4 buffer)
 
+input group "=== SMT Divergence filter (XAU vs DXY) ==="
+input bool   InpUseSMT            = true;     // Require SMT divergence to confirm the sweep
+input string InpSMTSymbol         = "USDX";   // Correlated symbol (DXY/USDX, or e.g. EURUSD)
+input bool   InpSMTInverse        = true;     // true = inversely correlated (DXY/USDX); false = positive (EURUSD)
+input int    InpSMTLookback       = 10;       // Bars (entry TF) to find the prior reference extreme
+input bool   InpSMTBlockIfNoData  = false;    // If SMT symbol data missing: true=block trade, false=skip filter
+
 input group "=== General ==="
 input long   InpMagic            = 88020;  // Magic number
 input string InpComment          = "GoldCRTQT";
@@ -306,6 +313,76 @@ double ComputeTP(bool isLong, double entry, double slDist)
 }
 
 //==================================================================
+// SMT divergence filter (XAU vs a correlated symbol, e.g. DXY/USDX)
+//
+// Idea: when XAU sweeps liquidity (makes a fresh local extreme), a truly
+// correlated instrument should confirm by making its own matching extreme.
+// If it FAILS to (divergence), the sweep is likely manipulation -> confirm fade.
+//
+// isLong = true  : XAU swept a LOW (new local low). Confirm if the correlated
+//                  symbol does NOT make the matching extreme.
+//   - inverse corr (DXY): DXY should make a HIGHER HIGH -> divergence if it does NOT.
+//   - positive corr (EURUSD): should make a LOWER LOW -> divergence if it does NOT.
+// Returns true = SMT confirms the entry.
+//==================================================================
+bool CheckSMT(bool isLong)
+{
+   if(!InpUseSMT) return true;
+
+   string s = InpSMTSymbol;
+   if(!SymbolSelect(s, true)) return !InpSMTBlockIfNoData;
+
+   int L = InpSMTLookback;
+   if(L < 2) L = 2;
+
+   // need bars 1..L+1 available on both symbols
+   if(Bars(s, InpEntryTF) < L + 2 || Bars(_Symbol, InpEntryTF) < L + 2)
+      return !InpSMTBlockIfNoData;
+
+   // XAU current extreme (last closed bar) and prior reference extreme (bars 2..L+1)
+   double xauNowLow  = iLow (_Symbol, InpEntryTF, 1);
+   double xauNowHigh = iHigh(_Symbol, InpEntryTF, 1);
+
+   // correlated symbol values (index-aligned; standard SMT approximation)
+   double cNowHigh = iHigh(s, InpEntryTF, 1);
+   double cNowLow  = iLow (s, InpEntryTF, 1);
+   if(cNowHigh <= 0 || cNowLow <= 0) return !InpSMTBlockIfNoData;
+
+   double cPrevHigh = -DBL_MAX, cPrevLow = DBL_MAX;
+   double xPrevLow  = DBL_MAX,  xPrevHigh = -DBL_MAX;
+   for(int i = 2; i <= L + 1; i++)
+   {
+      double ch = iHigh(s, InpEntryTF, i);
+      double cl = iLow (s, InpEntryTF, i);
+      if(ch > cPrevHigh) cPrevHigh = ch;
+      if(cl < cPrevLow ) cPrevLow  = cl;
+
+      double xl = iLow (_Symbol, InpEntryTF, i);
+      double xh = iHigh(_Symbol, InpEntryTF, i);
+      if(xl < xPrevLow ) xPrevLow  = xl;
+      if(xh > xPrevHigh) xPrevHigh = xh;
+   }
+
+   if(isLong)
+   {
+      // XAU must have actually made a fresh local low for the comparison to be valid
+      if(xauNowLow >= xPrevLow) return false;
+      if(InpSMTInverse)
+         return (cNowHigh < cPrevHigh);   // DXY failed to make a higher high -> bullish SMT
+      else
+         return (cNowLow  > cPrevLow);    // EURUSD failed to make a lower low -> bullish SMT
+   }
+   else
+   {
+      if(xauNowHigh <= xPrevHigh) return false;
+      if(InpSMTInverse)
+         return (cNowLow  > cPrevLow);    // DXY failed to make a lower low -> bearish SMT
+      else
+         return (cNowHigh < cPrevHigh);   // EURUSD failed to make a higher high -> bearish SMT
+   }
+}
+
+//==================================================================
 // CRT sweep detection on a CLOSED entry-TF candle -> fade entry
 //==================================================================
 void HuntSweep()
@@ -350,6 +427,7 @@ void HuntSweep()
    if(bearSweep)
    {
       if(InpUseTrueOpenBias && g_trueOpenSet && bid > g_trueOpen) return; // bias = short only below TO
+      if(!CheckSMT(false)) { PrintFormat("[%s] SHORT sweep rejected: no SMT divergence.", InpComment); return; }
       double entry = bid;
       double sl    = NormalizeDouble(h + slBuf, _Digits);
       double slDist= MathAbs(sl - entry);
@@ -368,6 +446,7 @@ void HuntSweep()
    else if(bullSweep)
    {
       if(InpUseTrueOpenBias && g_trueOpenSet && bid < g_trueOpen) return; // bias = long only above TO
+      if(!CheckSMT(true)) { PrintFormat("[%s] LONG sweep rejected: no SMT divergence.", InpComment); return; }
       double entry = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       double sl    = NormalizeDouble(l - slBuf, _Digits);
       double slDist= MathAbs(entry - sl);
@@ -457,6 +536,16 @@ int OnInit()
 
    g_atrHandle = iATR(_Symbol, InpEntryTF, InpATRPeriod);
    if(g_atrHandle == INVALID_HANDLE) Print("[",InpComment,"] WARNING: ATR handle failed.");
+
+   if(InpUseSMT)
+   {
+      if(SymbolSelect(InpSMTSymbol, true))
+         PrintFormat("[%s] SMT filter ON. Symbol=%s inverse=%s",
+                     InpComment, InpSMTSymbol, (InpSMTInverse?"yes":"no"));
+      else
+         PrintFormat("[%s] WARNING: SMT symbol '%s' not found. Check the exact name in Market Watch (DXY/USDX/USDOLLAR...).",
+                     InpComment, InpSMTSymbol);
+   }
 
    if(StringFind(_Symbol, "XAU") < 0)
       Print("[",InpComment,"] NOTE: tuned for XAUUSD (Gold). Current symbol: ", _Symbol);
