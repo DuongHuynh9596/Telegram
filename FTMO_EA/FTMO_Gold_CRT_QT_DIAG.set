@@ -1,0 +1,44 @@
+; DIAGNOSTIC preset for FTMO_Gold_CRT_QT.mq5 — NOT for live trading.
+; Purpose: loosen the filters so you get MANY more trades to study the
+; loss pattern (run in Strategy Tester with Visualization ON).
+; Once you see what the losing trades look like, switch back to the
+; normal FTMO_Gold_CRT_QT.set and apply the targeted fix.
+InpRiskPercent=0.5
+InpDailyLossStopPct=4.0
+InpMaxDDStopPct=8.0
+InpMaxSpreadPoints=80
+InpMaxTradesPerDay=8
+InpESTOffsetHours=7
+InpAllowQ1=false
+InpAllowQ2=true
+InpAllowQ3=true
+InpAllowQ4=true
+InpUseTrueOpenBias=false
+InpSkipFriday=false
+InpRangeTF=16385
+InpEntryTF=5
+InpMinRangePoints=150
+InpMaxRangePoints=12000
+InpSweepBufferPts=10
+InpSLBufferPoints=60
+InpTPMode=0
+InpTP_R=2.0
+InpUseStepTrail=true
+InpStep1TrigR=1.0
+InpStep1LockR=0.1
+InpStep2TrigR=1.5
+InpStep2LockR=0.7
+InpStep3TrigR=2.0
+InpStep3LockR=1.3
+InpUseTrailing=true
+InpATRPeriod=14
+InpTrailATRMult=2.0
+InpTrailStartR=2.0
+InpCloseAllHourEST=16
+InpUseSMT=false
+InpSMTSymbol=USDX
+InpSMTInverse=true
+InpSMTLookback=10
+InpSMTBlockIfNoData=false
+InpMagic=88020
+InpComment=GoldCRTQT_DIAG
