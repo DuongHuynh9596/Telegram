@@ -60,12 +60,18 @@ input int    InpTPMode           = 0;      // TP mode
 input double InpTP_R             = 2.0;    // R multiple (used when InpTPMode=2)
 
 input group "=== Trade Management ==="
-input bool   InpUseBreakeven     = true;   // Move SL to breakeven
-input double InpBE_TriggerR      = 1.0;    // Trigger breakeven at this R profit
-input double InpBE_LockPoints    = 20;     // Lock-in points beyond entry at breakeven
-input bool   InpUseTrailing      = true;   // ATR trailing after breakeven
+input bool   InpUseStepTrail     = true;   // Stepped R-based profit ladder (recommended)
+// Each step: when profit reaches TrigR (in R), move SL to LockR (in R, beyond entry).
+input double InpStep1TrigR       = 1.0;    // Step 1 trigger (R)
+input double InpStep1LockR       = 0.1;    // Step 1 lock  (R)  -> breakeven + small profit
+input double InpStep2TrigR       = 1.5;    // Step 2 trigger (R)
+input double InpStep2LockR       = 0.7;    // Step 2 lock  (R)
+input double InpStep3TrigR       = 2.0;    // Step 3 trigger (R)
+input double InpStep3LockR       = 1.3;    // Step 3 lock  (R)
+input bool   InpUseTrailing      = true;   // ATR trailing after the last step
 input int    InpATRPeriod        = 14;     // ATR period
 input double InpTrailATRMult     = 2.0;    // Trailing distance = ATR * this
+input double InpTrailStartR      = 2.0;    // Only start ATR trailing past this R
 input int    InpCloseAllHourEST  = 16;     // Force-flatten at this EST hour (end of Q4 buffer)
 
 input group "=== SMT Divergence filter (XAU vs DXY) ==="
@@ -91,6 +97,11 @@ datetime g_c2BarTime  = 0;             // time of the current C2 (range-TF) cand
 bool     g_tradedThisC2 = false;       // already took a trade on this C2 candle
 
 datetime g_lastEntryBar = 0;           // last processed entry-TF bar
+
+// Open-position tracking (one trade at a time) for the stepped trailing ladder
+ulong    g_posTicket = 0;              // ticket currently being managed
+double   g_origRisk  = 0.0;            // original SL distance (1R) of that position
+double   g_origEntry = 0.0;            // original entry price of that position
 
 // Quarterly Theory day tracking (EST)
 int      g_estDay = -1;                // day-of-year in EST, to detect new EST day
@@ -465,10 +476,28 @@ void HuntSweep()
 }
 
 //==================================================================
-// Breakeven + ATR trailing
+// Stepped R-based trailing ladder (+ optional ATR trail past last step)
+//
+// Profit is measured in R = multiples of the ORIGINAL SL distance of THIS
+// position (captured when the position first appears). Each step moves the SL
+// to (entry +/- LockR * 1R) once profit reaches TrigR. SL only ever moves
+// forward. After the last step, an ATR trail lets winners run.
 //==================================================================
+// Returns the highest lock (in R) earned for a given profit (in R), or
+// -DBL_MAX if no step reached yet.
+double LadderLockR(double profitR)
+{
+   double lock = -DBL_MAX;
+   if(profitR >= InpStep1TrigR) lock = InpStep1LockR;
+   if(profitR >= InpStep2TrigR) lock = InpStep2LockR;
+   if(profitR >= InpStep3TrigR) lock = InpStep3LockR;
+   return lock;
+}
+
 void ManageOpenPositions()
 {
+   bool found = false;
+
    for(int i = PositionsTotal()-1; i >= 0; i--)
    {
       ulong tk = PositionGetTicket(i);
@@ -476,40 +505,61 @@ void ManageOpenPositions()
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
       if(PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
 
+      found = true;
       long   type = PositionGetInteger(POSITION_TYPE);
       double open = PositionGetDouble(POSITION_PRICE_OPEN);
       double sl   = PositionGetDouble(POSITION_SL);
       double tp   = PositionGetDouble(POSITION_TP);
       double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       double ask  = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      double riskDist = MathAbs(open - sl);
-      if(riskDist <= 0) continue;
+
+      // Capture the ORIGINAL 1R when we first see this position
+      if(tk != g_posTicket)
+      {
+         g_posTicket = tk;
+         g_origEntry = open;
+         g_origRisk  = MathAbs(open - sl);   // SL is still the original here
+      }
+      double R = g_origRisk;
+      if(R <= 0) continue;
+
       double newSL = sl;
 
       if(type == POSITION_TYPE_BUY)
       {
-         double profit = bid - open;
-         if(InpUseBreakeven && profit >= riskDist * InpBE_TriggerR)
+         double profitR = (bid - open) / R;
+
+         if(InpUseStepTrail)
          {
-            double be = open + Pts(InpBE_LockPoints);
-            if(be > newSL) newSL = be;
+            double lockR = LadderLockR(profitR);
+            if(lockR > -DBL_MAX)
+            {
+               double cand = open + lockR * R;
+               if(cand > newSL) newSL = cand;
+            }
          }
-         if(InpUseTrailing)
+         if(InpUseTrailing && profitR >= InpTrailStartR)
          {
             double atr = GetATR();
             if(atr > 0) { double tr = bid - atr*InpTrailATRMult; if(tr > newSL) newSL = tr; }
          }
-         if(newSL > sl + _Point) trade.PositionModify(tk, NormalizeDouble(newSL,_Digits), tp);
+         if(newSL > sl + _Point)
+            trade.PositionModify(tk, NormalizeDouble(newSL,_Digits), tp);
       }
       else if(type == POSITION_TYPE_SELL)
       {
-         double profit = open - ask;
-         if(InpUseBreakeven && profit >= riskDist * InpBE_TriggerR)
+         double profitR = (open - ask) / R;
+
+         if(InpUseStepTrail)
          {
-            double be = open - Pts(InpBE_LockPoints);
-            if(be < newSL || newSL == 0) newSL = be;
+            double lockR = LadderLockR(profitR);
+            if(lockR > -DBL_MAX)
+            {
+               double cand = open - lockR * R;
+               if(cand < newSL || newSL == 0) newSL = cand;
+            }
          }
-         if(InpUseTrailing)
+         if(InpUseTrailing && profitR >= InpTrailStartR)
          {
             double atr = GetATR();
             if(atr > 0) { double tr = ask + atr*InpTrailATRMult; if(tr < newSL || newSL==0) newSL = tr; }
@@ -518,6 +568,8 @@ void ManageOpenPositions()
             trade.PositionModify(tk, NormalizeDouble(newSL,_Digits), tp);
       }
    }
+
+   if(!found) { g_posTicket = 0; g_origRisk = 0; g_origEntry = 0; }
 }
 
 //==================================================================

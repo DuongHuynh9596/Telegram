@@ -136,6 +136,28 @@ Note: the daily guard resets at **server midnight** (matching FTMO's daily reset
 while the True Open / quarter logic runs on **EST** — these are intentionally
 separate clocks.
 
+## Stepped trailing ladder (R-based)
+
+Trailing is anchored to **R** = the *original* SL distance of each trade, not a
+fixed point value — so every trade is protected consistently regardless of how
+wide or tight its sweep stop was. As price runs in your favour, the SL ratchets
+**forward only** through three steps, then an ATR trail lets winners breathe.
+
+| Profit reached | SL moves to | Why |
+|----------------|-------------|-----|
+| **+1.0R** (`Step1`) | entry **+0.1R** | Risk-free + small lock. Not earlier — Gold often pulls back 0.3–0.6R before running, so a too-early breakeven kills good trades. |
+| **+1.5R** (`Step2`) | entry **+0.7R** | Locks ~half the move. |
+| **+2.0R** (`Step3`) | entry **+1.3R** | Protects most of the gain. |
+| **>2.0R** | ATR trail (`2×ATR`) | Distance adapts to live volatility instead of a static number. |
+
+Inputs: `InpStep1TrigR/LockR` … `InpStep3TrigR/LockR`, then `InpUseTrailing`,
+`InpTrailATRMult`, `InpTrailStartR`. Set `InpUseStepTrail=false` to use ATR
+trailing only.
+
+> Want it to behave like a fixed "+50 points" lock? Pick `LockR` so that
+> `LockR × (your typical SL in points) ≈ 50`. R-based just keeps it consistent
+> across trades with different stop sizes.
+
 ## SMT divergence filter (XAU vs DXY)
 
 An optional confirmation layer on top of the sweep. **SMT (Smart Money Technique)**
