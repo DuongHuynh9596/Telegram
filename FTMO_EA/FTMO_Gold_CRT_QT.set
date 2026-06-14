@@ -1,0 +1,32 @@
+; Preset for FTMO_Gold_CRT_QT.mq5 — XAUUSD, FTMO 10k baseline.
+; In Strategy Tester: Inputs tab -> Load -> pick this .set file.
+; VERIFY InpESTOffsetHours against your broker's server clock before live use.
+InpRiskPercent=0.5
+InpDailyLossStopPct=4.0
+InpMaxDDStopPct=8.0
+InpMaxSpreadPoints=50
+InpMaxTradesPerDay=3
+InpESTOffsetHours=7
+InpAllowQ1=false
+InpAllowQ2=true
+InpAllowQ3=true
+InpAllowQ4=false
+InpUseTrueOpenBias=true
+InpSkipFriday=true
+InpRangeTF=16385
+InpEntryTF=5
+InpMinRangePoints=200
+InpMaxRangePoints=8000
+InpSweepBufferPts=10
+InpSLBufferPoints=40
+InpTPMode=0
+InpTP_R=2.0
+InpUseBreakeven=true
+InpBE_TriggerR=1.0
+InpBE_LockPoints=20
+InpUseTrailing=true
+InpATRPeriod=14
+InpTrailATRMult=2.0
+InpCloseAllHourEST=16
+InpMagic=88020
+InpComment=GoldCRTQT
