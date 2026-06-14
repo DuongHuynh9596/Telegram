@@ -79,6 +79,73 @@ London opens on your server's clock.
 
 ---
 
+---
+
+# v2 — CRT + Quarterly Theory EA (`FTMO_Gold_CRT_QT.mq5`)
+
+A smarter sibling of v1. Instead of **chasing** the breakout, it **fades the
+liquidity sweep** — which is exactly what Candle Range Theory (CRT) and Daye's
+Quarterly Theory predict happens to naive breakout traders.
+
+## The model
+
+**CRT (Candle Range Theory) — 3-candle AMD:**
+- **C1 = previous H1 candle** → its high is **CRH**, its low is **CRL** (the range).
+- **C2 = current H1 candle (manipulation)** → we watch **M5** for a wick that
+  sweeps CRH or CRL and then **closes back inside** the range (a failed breakout).
+- **Entry = fade the sweep** (Turtle Soup): sweep above CRH → **SHORT**,
+  sweep below CRL → **LONG**. SL sits just beyond the sweep wick (tight → great R:R).
+- **C3 = distribution** → target the opposite side of the range (CRH ↔ CRL).
+
+**Quarterly Theory — time filter (daily cycle, EST):**
+
+| Quarter | EST time | Session | Default |
+|---------|----------|---------|---------|
+| Q1 | 18:00–00:00 | Asia (accumulation) | off |
+| **Q2** | **00:00–06:00** | London — **True Open** (manipulation) | **on** |
+| **Q3** | **06:00–12:00** | NY AM (distribution) | **on** |
+| Q4 | 12:00–18:00 | NY PM (continuation/reversal) | off |
+
+- Sweeps are only hunted in the **enabled quarters** (default Q2 + Q3).
+- **True Open bias:** the price at 00:00 EST is the day's True Open.
+  Above it → longs only; below it → shorts only. (`InpUseTrueOpenBias`)
+
+## ⏰ Server-time conversion (important)
+
+Quarter times above are **New York (EST)**. The EA converts your broker's server
+time to EST using **`InpESTOffsetHours`** = how many hours the server is *ahead* of
+New York. FTMO (EET, GMT+2/+3) is **~7** hours ahead of EST, which is the default.
+DST shifts both zones together, so 7 stays stable — but verify against your server
+clock once.
+
+## Key inputs (v2)
+
+| Input | Default | Meaning |
+|-------|---------|---------|
+| `InpRangeTF` / `InpEntryTF` | H1 / M5 | CRT range TF and entry TF |
+| `InpAllowQ1..Q4` | F/T/T/F | Which quarters may trade |
+| `InpUseTrueOpenBias` | true | Long-above / short-below True Open |
+| `InpESTOffsetHours` | 7 | Server hours ahead of EST |
+| `InpSweepBufferPts` | 10 | Min pierce beyond CRH/CRL to count as a sweep |
+| `InpSLBufferPoints` | 40 | SL distance beyond the sweep wick |
+| `InpTPMode` | 0 | 0 = opposite range edge, 1 = equilibrium, 2 = R multiple |
+| `InpRiskPercent` | 0.5 | Risk per trade |
+
+The FTMO **daily-loss (4%)** and **max-DD (8%)** guards from v1 are identical here.
+Note: the daily guard resets at **server midnight** (matching FTMO's daily reset),
+while the True Open / quarter logic runs on **EST** — these are intentionally
+separate clocks.
+
+## Which one to use?
+
+- **v1 (breakout)** — simpler, fewer moving parts, good first test.
+- **v2 (CRT+QT)** — tighter stops, avoids stop-hunts, higher R:R, but needs the
+  server-time offset set correctly. Recommended once you've validated the offset.
+
+Backtest **both** on real Gold ticks and compare before going live.
+
+---
+
 ## Disclaimer
 
 For educational use. Trading leveraged products carries substantial risk. You are
