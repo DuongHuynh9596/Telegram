@@ -1,30 +1,47 @@
 //+------------------------------------------------------------------+
-//|  MSNR_EA.mq5  v2.3                                               |
-//|  - Draw SL/TP/Entry/Levels on chart                              |
-//|  - ChartScreenShot -> copy to Common\Files -> Python sends TG    |
+//|  MSNR_EA.mq5  v3.1                                               |
+//|  - Storyline/QM/Rejection xu ly ben Python -> signal.json        |
+//|  - 2 LOAI ENTRY (MARKET confirmed / LIMIT bat rau)               |
+//|  - QUAN LY VON v3.1:                                              |
+//|    SL $12 / TP $10 (co dinh, RR 0.83) -> set tu Python           |
+//|    +$8 -> doi SL = entry + $1 (lock duong 1 gia vang)           |
+//|    CRASH: gia chay thuan huong >= CrashTrigAtr*ATR / CrashLookback |
+//|      nen -> THAO TP (tp=0) + SL trail = gia hien tai -+ ATR*Mult  |
+//|      (san BE, chi siet) = ride con song manh thay vi chot $15     |
 //+------------------------------------------------------------------+
 #property copyright "MSNR System"
-#property version   "2.30"
+#property version   "3.10"
 #property strict
 #include <Trade\Trade.mqh>
 #include <Trade\AccountInfo.mqh>
 
-input string SignalFilePath   = "C:\\MSNR_System\\signals\\signal.json";
-input double MaxDailyLossPct  = 4.5;
-input double MaxTotalDDPct    = 9.0;
-input int    CheckIntervalSec = 5;
-input int    MinConfluence    = 1;
-input bool   AllowMultiPos    = false;
-input bool   DrawOnChart      = true;
-input int    ScreenshotWidth  = 1280;
-input int    ScreenshotHeight = 720;
+input string SignalFilePath      = "signal.json";
+input double MaxDailyLossPct     = 4.5;
+input double MaxTotalDDPct       = 9.0;
+input int    CheckIntervalSec    = 5;
+input int    SignalMaxAgeSec     = 180;  // bo qua signal cu hon N giay (chong stale)
+input int    MinConfluence       = 2;
+input bool   AllowMultiPos       = false;
+input bool   UseLimitEntries     = true; // cho phep dat pending LIMIT (entry rau nen)
+input int    PendingExpirySec    = 1800; // huy pending LIMIT sau N giay neu chua khop
+input bool   DrawOnChart         = true;
+input int    ScreenshotWidth     = 1280;
+input int    ScreenshotHeight    = 720;
+// ── Money management v3.1 (BE@+10 + Crash ATR ride) ────────────────
+input double BeTrigger        = 8.0;    // +$8 profit -> doi SL = entry + BeLock
+input double BeLock           = 1.0;    // SL = entry + $1 (lock duong 1 gia vang)
+input int    AtrPeriod        = 14;     // ATR(H1)
+input double CrashTrigAtr     = 1.5;    // gia chay thuan huong >= x*ATR / CrashLookback nen = CRASH
+input int    CrashLookback    = 3;      // so nen H1 do cu chay
+input double CrashAtrMult     = 1.0;    // CRASH -> thao TP + SL trail = gia hien tai -+ ATR*x
 
 CTrade       Trade;
 CAccountInfo Account;
-double       g_DayStartBal   = 0;
-datetime     g_LastDay       = 0;
-string       g_LastTS        = "";
-int          g_TickCount     = 0;
+double       g_DayStartBal = 0;
+datetime     g_LastDay     = 0;
+string       g_LastTS      = "";
+int          g_TickCount   = 0;
+int          g_AtrHandle   = INVALID_HANDLE;
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -33,7 +50,26 @@ int OnInit()
     Trade.SetDeviationInPoints(50);
     g_DayStartBal = Account.Balance();
     g_LastDay     = TimeCurrent();
-    Print("MSNR EA v2.3 | DrawChart=", DrawOnChart);
+    g_AtrHandle   = iATR(_Symbol, PERIOD_H1, AtrPeriod);
+
+    // Signal dang nam san trong file = DA DUNG.
+    // Chong vao lenh rac ngay sau khi F7 compile / re-attach EA
+    {
+        string a="", ts="", ot=""; double e=0,s=0,t=0,l=0,ep=0,pe=0; int c=0;
+        double lvp[6]; string lvt[6]; int lvc=0;
+        if(ReadSignal(a, e, s, t, l, c, ep, ts, ot, pe, lvp, lvt, lvc) && ts != "")
+        {
+            g_LastTS = ts;
+            Print("Init: existing signal '", a, "' marked consumed (ts=", ts, ")");
+        }
+    }
+
+    Print("MSNR EA v3.1 | Confluence>=", MinConfluence,
+          " | MaxAge=", SignalMaxAgeSec, "s",
+          " | LimitEntries=", UseLimitEntries, " expiry=", PendingExpirySec, "s",
+          " | BE@+$", BeTrigger, "-> +$", BeLock,
+          " | CRASH>=", CrashTrigAtr, "xATR(", AtrPeriod, ")/", CrashLookback,
+          "bars -> removeTP + trail ATRx", CrashAtrMult);
     EventSetTimer(1);
     return INIT_SUCCEEDED;
 }
@@ -49,26 +85,74 @@ void OnTimer()
     ResetDailyIfNew();
     if(!PropFirmGuard()) { CloseAll("PropFirm limit"); return; }
     ManageTrail();
+    ManagePending();   // huy pending LIMIT da het han
 
     g_TickCount++;
     if(g_TickCount < CheckIntervalSec) return;
     g_TickCount = 0;
 
-    string action="", timestamp="";
-    double entry=0, sl=0, tp=0, lot=0, trail_trigger=23.0, trail_lock=18.0;
+    string action="", timestamp="", order_type="";
+    double entry=0, sl=0, tp=0, lot=0, ts_epoch=0, pending_expiry=0;
     int    conf=0;
     // Nearby levels (up to 6)
     double lv_prices[6]; string lv_types[6]; int lv_cnt=0;
 
-    if(!ReadSignal(action, entry, sl, tp, lot, conf,
-                   trail_trigger, trail_lock, timestamp,
-                   lv_prices, lv_types, lv_cnt)) return;
+    if(!ReadSignal(action, entry, sl, tp, lot, conf, ts_epoch, timestamp,
+                   order_type, pending_expiry, lv_prices, lv_types, lv_cnt)) return;
     if(timestamp == g_LastTS || action=="NONE" || action=="") return;
     if(conf < MinConfluence) return;
-    if(!AllowMultiPos && PositionsTotal() > 0) return;
+    if(order_type == "") order_type = "MARKET";   // back-compat signal cu
+
+    // Signal het han (qua SignalMaxAgeSec) -> bo qua, danh dau da xu ly
+    if(ts_epoch > 0)
+    {
+        double age = (double)TimeGMT() - ts_epoch;
+        if(age > SignalMaxAgeSec)
+        {
+            g_LastTS = timestamp;
+            Print("Signal expired (age=", DoubleToString(age,0), "s > ",
+                  SignalMaxAgeSec, "s) — skip");
+            return;
+        }
+    }
+
+    // Chi giu 1 vi the/pending tai 1 thoi diem (tru khi AllowMultiPos)
+    if(!AllowMultiPos && (PositionsTotal() + CountMSNRPending()) > 0) return;
 
     lot = NormLot(lot);
-    bool ok = false;
+    bool   isLimit = (order_type == "LIMIT" && UseLimitEntries);
+    double exp_sec = (pending_expiry > 0) ? pending_expiry : PendingExpirySec;
+    bool   ok = false;
+
+    if(isLimit)
+    {
+        // ── Entry rau nen: dat pending LIMIT nghi tai level, KHONG cho confirm ──
+        if(action == "BUY")
+            ok = Trade.BuyLimit (lot, entry, Symbol(), sl, tp,
+                                 ORDER_TIME_GTC, 0, "MSNR_BUY_LIMIT");
+        if(action == "SELL")
+            ok = Trade.SellLimit(lot, entry, Symbol(), sl, tp,
+                                 ORDER_TIME_GTC, 0, "MSNR_SELL_LIMIT");
+        if(ok)
+        {
+            g_LastTS = timestamp;
+            Print("Pending LIMIT OK | ", action, " @", DoubleToString(entry,2),
+                  " sl=", DoubleToString(sl,2), " tp=", DoubleToString(tp,2),
+                  " (expiry ", (int)exp_sec, "s)");
+            if(DrawOnChart)
+            {
+                DrawSetup(action, entry, sl, tp, lv_prices, lv_types, lv_cnt);
+                ChartRedraw(0);
+            }
+        }
+        else
+            Print("Limit FAIL: ", Trade.ResultRetcode(), " ",
+                  Trade.ResultRetcodeDescription());
+        return;
+    }
+
+    // ── CONFIRMED: vao market. Co confirm roi -> huy pending MSNR dang treo ──
+    CancelMSNRPending();
     if(action == "BUY")  ok = Trade.Buy (lot, Symbol(), 0, sl, tp, "MSNR_BUY");
     if(action == "SELL") ok = Trade.Sell(lot, Symbol(), 0, sl, tp, "MSNR_SELL");
 
@@ -89,6 +173,46 @@ void OnTimer()
     }
     else
         Print("Order FAIL: ", Trade.ResultRetcode(), " ", Trade.ResultRetcodeDescription());
+}
+
+//+------------------------------------------------------------------+
+//| Pending LIMIT order helpers (magic 20260607)                      |
+//+------------------------------------------------------------------+
+int CountMSNRPending()
+{
+    int n = 0;
+    for(int i = OrdersTotal()-1; i >= 0; i--)
+    {
+        ulong tk = OrderGetTicket(i);
+        if(tk > 0 && OrderGetInteger(ORDER_MAGIC) == 20260607) n++;
+    }
+    return n;
+}
+
+void CancelMSNRPending()
+{
+    for(int i = OrdersTotal()-1; i >= 0; i--)
+    {
+        ulong tk = OrderGetTicket(i);
+        if(tk > 0 && OrderGetInteger(ORDER_MAGIC) == 20260607)
+            Trade.OrderDelete(tk);
+    }
+}
+
+void ManagePending()
+{
+    for(int i = OrdersTotal()-1; i >= 0; i--)
+    {
+        ulong tk = OrderGetTicket(i);
+        if(tk == 0 || OrderGetInteger(ORDER_MAGIC) != 20260607) continue;
+        long t0 = (long)OrderGetInteger(ORDER_TIME_SETUP);
+        if((long)TimeCurrent() - t0 > PendingExpirySec)
+        {
+            Trade.OrderDelete(tk);
+            Print("Pending LIMIT expired -> delete #", tk,
+                  " (age ", (long)TimeCurrent()-t0, "s)");
+        }
+    }
 }
 void OnTick() {}
 
@@ -113,13 +237,14 @@ void DrawSetup(string action, double exec_price, double sl, double tp,
              c_entry);
 
     // ── SL line ────────────────────────────────────────────────────
+    double riskd = MathAbs(exec_price - sl);
     DrawHLine("MSNR_SL", sl, c_sl, STYLE_DASH, 2);
     DrawText("MSNR_SL_Lbl", sl,
-             "SL " + DoubleToString(sl, 2) + "  (-$18)", c_sl);
+             "SL " + DoubleToString(sl, 2) + "  (-$" + DoubleToString(riskd, 0) + ")", c_sl);
 
     // ── TP line ────────────────────────────────────────────────────
     DrawHLine("MSNR_TP", tp, c_tp, STYLE_DASH, 2);
-    double rr = MathAbs(tp - exec_price) / 18.0;
+    double rr = (riskd > 0) ? MathAbs(tp - exec_price) / riskd : 0;
     DrawText("MSNR_TP_Lbl", tp,
              "TP " + DoubleToString(tp, 2) +
              "  RR " + DoubleToString(rr, 1) + ":1", c_tp);
@@ -225,28 +350,28 @@ void TakeAndCopyScreenshot()
 
 //+------------------------------------------------------------------+
 bool ReadSignal(string &action, double &entry, double &sl, double &tp,
-                double &lot, int &conf,
-                double &trail_trigger, double &trail_lock, string &timestamp,
+                double &lot, int &conf, double &ts_epoch, string &timestamp,
+                string &order_type, double &pending_expiry,
                 double &lv_prices[], string &lv_types[], int &lv_cnt)
 {
+    // FILE_COMMON: doc tu Common\Files (cho phep Python viet, EA doc)
     int h = FileOpen(SignalFilePath,
-                     FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ, '\n', CP_ACP);
+                     FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_COMMON, '\n', CP_ACP);
     if(h == INVALID_HANDLE) return false;
     string content = "";
     while(!FileIsEnding(h)) content += FileReadString(h);
     FileClose(h);
 
-    action        = JSONStr(content, "action");
-    entry         = JSONDbl(content, "entry");
-    sl            = JSONDbl(content, "sl");
-    tp            = JSONDbl(content, "tp");
-    lot           = JSONDbl(content, "lot");
-    conf          = (int)JSONDbl(content, "confluence");
-    trail_trigger = JSONDbl(content, "trail_trigger");
-    trail_lock    = JSONDbl(content, "trail_lock_usd");
-    timestamp     = JSONStr(content, "timestamp");
-    if(trail_trigger <= 0) trail_trigger = 23.0;
-    if(trail_lock    <= 0) trail_lock    = 18.0;
+    action         = JSONStr(content, "action");
+    entry          = JSONDbl(content, "entry");
+    sl             = JSONDbl(content, "sl");
+    tp             = JSONDbl(content, "tp");
+    lot            = JSONDbl(content, "lot");
+    conf           = (int)JSONDbl(content, "confluence");
+    ts_epoch       = JSONDbl(content, "ts_epoch");
+    timestamp      = JSONStr(content, "timestamp");
+    order_type     = JSONStr(content, "order_type");      // MARKET / LIMIT
+    pending_expiry = JSONDbl(content, "pending_expiry");
 
     // Parse nearby levels: lv0_t, lv0_p, lv1_t, lv1_p, ...
     lv_cnt = (int)JSONDbl(content, "lv_cnt");
@@ -283,58 +408,95 @@ double JSONDbl(string j, string k)
 }
 
 //+------------------------------------------------------------------+
+double GetAtrH1()
+{
+    if(g_AtrHandle == INVALID_HANDLE) return 0;
+    double buf[1];
+    if(CopyBuffer(g_AtrHandle, 0, 1, 1, buf) == 1) return buf[0];
+    return 0;
+}
+
+// Net move thuan huong qua CrashLookback nen da dong (idx1 = nen dong gan nhat)
+double FavMove(bool isBuy)
+{
+    double c1 = iClose(_Symbol, PERIOD_H1, 1);
+    double c0 = iClose(_Symbol, PERIOD_H1, 1 + CrashLookback);
+    if(c1 == 0 || c0 == 0) return 0;
+    return isBuy ? (c1 - c0) : (c0 - c1);
+}
+
+//+------------------------------------------------------------------+
+//| v3.1: BE @ +BeTrigger ; CRASH -> thao TP + trail ATR (san BE)     |
+//+------------------------------------------------------------------+
 void ManageTrail()
 {
+    double atr = GetAtrH1();
+
     for(int i = PositionsTotal()-1; i >= 0; i--)
     {
         ulong ticket = PositionGetTicket(i);
         if(!PositionSelectByTicket(ticket)) continue;
         if(PositionGetInteger(POSITION_MAGIC) != 20260607) continue;
 
-        double entry_px  = PositionGetDouble(POSITION_PRICE_OPEN);
-        double cur_sl    = PositionGetDouble(POSITION_SL);
-        double cur_tp    = PositionGetDouble(POSITION_TP);
-        double cur_price = PositionGetDouble(POSITION_PRICE_CURRENT);
-        long   pos_type  = PositionGetInteger(POSITION_TYPE);
-        double trail_trigger = 23.0, trail_lock = 18.0;
+        double entry  = PositionGetDouble(POSITION_PRICE_OPEN);
+        double cur_sl = PositionGetDouble(POSITION_SL);
+        double cur_tp = PositionGetDouble(POSITION_TP);
+        double price  = PositionGetDouble(POSITION_PRICE_CURRENT);
+        bool   isBuy  = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+        double profit = isBuy ? (price - entry) : (entry - price);
+        bool   inCrash = (cur_tp == 0.0);   // TP da thao -> dang ride
 
-        if(pos_type == POSITION_TYPE_BUY)
+        // SL ride theo ATR tu gia hien tai, san BE (khong de ve lo)
+        double rideSL = isBuy ? price - atr*CrashAtrMult : price + atr*CrashAtrMult;
+        rideSL = NormalizeDouble(rideSL, _Digits);
+        if(isBuy) rideSL = MathMax(rideSL, entry);
+        else      rideSL = MathMin(rideSL, entry);
+
+        // ── 1. Dang RIDE (TP=0): chi siet SL theo ATR ──
+        if(inCrash)
         {
-            double profit = cur_price - entry_px;
-            double target_sl = NormalizeDouble(entry_px + trail_lock, _Digits);
-            if(profit >= trail_trigger && cur_sl < target_sl)
+            if(atr <= 0) continue;
+            bool better = isBuy ? (rideSL > cur_sl) : (cur_sl == 0 || rideSL < cur_sl);
+            if(better && Trade.PositionModify(ticket, rideSL, 0.0) && DrawOnChart)
             {
-                if(Trade.PositionModify(ticket, target_sl, cur_tp))
+                DrawHLine("MSNR_SL", rideSL, clrOrange, STYLE_DASH, 2);
+                DrawText("MSNR_SL_Lbl", rideSL, "SL CRASH-RIDE "+DoubleToString(rideSL,2), clrOrange);
+                ChartRedraw(0);
+            }
+            continue;
+        }
+
+        // ── 2. Phat hien CRASH (cu chay thuan huong manh khi da co lai >= BE) ──
+        if(profit >= BeTrigger && atr > 0 && FavMove(isBuy) >= CrashTrigAtr*atr)
+        {
+            double newsl = rideSL;
+            if(cur_sl > 0) newsl = isBuy ? MathMax(newsl, cur_sl) : MathMin(newsl, cur_sl);
+            if(Trade.PositionModify(ticket, newsl, 0.0))   // THAO TP + dat SL
+            {
+                Print("CRASH ride ", (isBuy?"BUY":"SELL"), " #", ticket,
+                      " favMove=", DoubleToString(FavMove(isBuy),2), " atr=", DoubleToString(atr,2),
+                      " -> TP off, SL=", DoubleToString(newsl,2));
+                if(DrawOnChart)
                 {
-                    Print("Trail 1R | BUY #", ticket, " SL->", target_sl);
-                    // Update SL line on chart
-                    if(DrawOnChart)
-                    {
-                        DrawHLine("MSNR_SL", target_sl, clrOrange, STYLE_DASH, 2);
-                        DrawText("MSNR_SL_Lbl", target_sl,
-                                 "SL (LOCKED 1R) " + DoubleToString(target_sl,2), clrOrange);
-                        ChartRedraw(0);
-                    }
+                    ObjectDelete(0,"MSNR_TP"); ObjectDelete(0,"MSNR_TP_Lbl"); ObjectDelete(0,"MSNR_TP_Zone");
+                    DrawHLine("MSNR_SL", newsl, clrOrange, STYLE_DASH, 2);
+                    DrawText("MSNR_SL_Lbl", newsl, "SL CRASH-RIDE "+DoubleToString(newsl,2), clrOrange);
+                    ChartRedraw(0);
                 }
             }
+            continue;
         }
-        else if(pos_type == POSITION_TYPE_SELL)
+
+        // ── 3. Breakeven @ +BeTrigger ──
+        if(profit >= BeTrigger)
         {
-            double profit = entry_px - cur_price;
-            double target_sl = NormalizeDouble(entry_px - trail_lock, _Digits);
-            if(profit >= trail_trigger && cur_sl > target_sl)
+            double be = NormalizeDouble(entry + (isBuy ? BeLock : -BeLock), _Digits);
+            bool better = isBuy ? (be > cur_sl) : (cur_sl == 0 || be < cur_sl);
+            if(better && Trade.PositionModify(ticket, be, cur_tp) && DrawOnChart)
             {
-                if(Trade.PositionModify(ticket, target_sl, cur_tp))
-                {
-                    Print("Trail 1R | SELL #", ticket, " SL->", target_sl);
-                    if(DrawOnChart)
-                    {
-                        DrawHLine("MSNR_SL", target_sl, clrOrange, STYLE_DASH, 2);
-                        DrawText("MSNR_SL_Lbl", target_sl,
-                                 "SL (LOCKED 1R) " + DoubleToString(target_sl,2), clrOrange);
-                        ChartRedraw(0);
-                    }
-                }
+                DrawHLine("MSNR_SL", be, clrOrange, STYLE_DASH, 2);
+                DrawText("MSNR_SL_Lbl", be, "SL BE "+DoubleToString(be,2), clrOrange);
+                ChartRedraw(0);
             }
         }
     }
